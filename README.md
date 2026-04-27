@@ -205,9 +205,117 @@ The suite covers engine kinetics (treadmilling, depoly, contractility),
 PBG instantiation/update/output schema, and full Composite assembly with
 RAM-emitter round-trips. All tests run offline.
 
+## Driving the real C++ MEDYAN binary (`MedyanCxxProcess`)
+
+In addition to the pure-Python `MedyanProcess`, the package ships
+`pbg_medyan.cxx.MedyanCxxProcess` — a PBG Process that drives the
+**actual** [MEDYAN C++ binary](https://github.com/medyan-dev/medyan-public)
+via subprocess + checkpoint-restart, so each `update(state, interval)`
+runs MEDYAN for that interval and resumes from the last snapshot on
+the next call.
+
+### Setup
+
+```bash
+# 1. Build MEDYAN yourself (it's not pip-installable):
+git clone https://github.com/medyan-dev/medyan-public
+cd medyan-public && # follow build instructions in their README
+
+# 2. Tell the wrapper where it lives:
+export MEDYAN_BIN=/path/to/built/medyan
+```
+
+The wrapper finds the binary via, in order:
+(1) `binary_path` config field, (2) `$MEDYAN_BIN`, (3) `medyan` on `PATH`.
+
+### Quick start
+
+```python
+from process_bigraph import allocate_core
+from pbg_medyan.cxx import MedyanCxxProcess
+
+core = allocate_core()
+core.register_link('MedyanCxxProcess', MedyanCxxProcess)
+
+proc = MedyanCxxProcess(
+    config={
+        'n_filaments': 5,
+        'filament_length': 1,
+        'snapshot_interval': 0.5,
+        'chemistry_preset': 'actin_only',  # or 'actin_motor_linker'
+        'timeout': 120.0,
+    },
+    core=core)
+
+# Each update runs MEDYAN for ``interval`` seconds.
+# First call: random seeding via NUMFILAMENTS / FILAMENTLENGTH.
+# Subsequent calls: writes a FILAMENTFILE from the last snapshot,
+# re-runs with PROJECTIONTYPE: PREDEFINED.
+print(proc.update({}, interval=1.0))
+print(proc.update({}, interval=1.0))
+```
+
+A runnable smoke test lives at [`demo/cxx_smoke.py`](demo/cxx_smoke.py).
+
+### Restart fidelity (read this!)
+
+MEDYAN does **not** expose a documented restart keyword that preserves
+linker / motor / brancher binding state across separate invocations.
+The pattern this wrapper uses (FILAMENTFILE + `PROJECTIONTYPE: PREDEFINED`)
+is the one in MEDYAN's own MATLAB `restart/` scripts:
+
+| state | preserved across `update()` calls? |
+| --- | --- |
+| filament bead positions | yes — exact |
+| filament types | yes |
+| diffusing-species copy numbers | no — re-seeded from chemistry each interval |
+| linker / motor / brancher bindings | no — re-sampled from chemistry each interval |
+| accumulated chemistry-step count | no |
+
+In practice, choose the `update()` interval to be **long enough** that
+chemistry reaches a quasi-steady state within each interval (so
+re-binding doesn't bias the dynamics). For most actin-network
+parameters that's 0.5-2 s. For full state preservation you'd need to
+extend MEDYAN itself to expose its internal restart protocol — out of
+scope here.
+
+### Units
+
+`MedyanCxxProcess` uses MEDYAN-native units (**nm**, seconds, pN).
+The pure-Python `MedyanProcess` uses **µm**, seconds, pN. If you
+compose them in the same Composite, convert at the boundary.
+
+### Custom chemistry
+
+```python
+proc = MedyanCxxProcess(config={
+    'chemistry_text': 'SPECIESDIFFUSING: AD 500 20e6 0 0 REG\n...',
+    # or:
+    'chemistry_path': '/abs/path/to/your/chemistryinput.txt',
+})
+```
+
+For one-off MEDYAN keyword overrides (e.g. swap the chemistry
+algorithm to Gillespie, change a force-field constant) pass them via
+the `extra_keywords` constructor argument:
+
+```python
+proc = MedyanCxxProcess(
+    config={'n_filaments': 5},
+    core=core,
+    extra_keywords={'CALGORITHM': 'GILLESPIE', 'FBENDINGK': 200.0},
+)
+```
+
+### Tests
+
+The integration tests in `tests/test_cxx_integration.py` are
+auto-skipped when no MEDYAN binary is found, so the offline suite
+stays green. Run them with `MEDYAN_BIN=/path/to/medyan pytest -v`.
+
 ## Caveats / scope
 
-This wrapper is **not** an exact reproduction of MEDYAN's C++ engine.
+The pure-Python wrapper is **not** an exact reproduction of MEDYAN's C++ engine.
 It captures the qualitative physics (Brownian-ratchet polymerization,
 Hill-style motor walking, alpha-actinin tethering, overdamped relaxation)
 in a small Python implementation suitable for:
