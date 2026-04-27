@@ -77,7 +77,18 @@ class MedyanProcess(Process):
         'crosslink_unbind_rate': {'_type': 'float', '_default': 0.05},
         'motor_unbind_rate': {'_type': 'float', '_default': 0.1},
         'seed_region_fraction': {'_type': 'float', '_default': 0.6},
+        'seed_mode': {'_type': 'string', '_default': 'random'},
         'n_substeps': {'_type': 'integer', '_default': 8},
+        # Membrane (vesicle boundary; off by default)
+        'enable_membrane': {'_type': 'boolean', '_default': False},
+        'membrane_radius': {'_type': 'float', '_default': 0.6},
+        'membrane_subdivisions': {'_type': 'integer', '_default': 2},
+        'membrane_edge_stiffness': {'_type': 'float', '_default': 30.0},
+        'membrane_bending_stiffness': {'_type': 'float', '_default': 2.0},
+        'membrane_pressure': {'_type': 'float', '_default': 0.0},
+        'membrane_drag': {'_type': 'float', '_default': 30.0},
+        'membrane_filament_coupling_radius': {'_type': 'float', '_default': 0.08},
+        'membrane_filament_coupling_strength': {'_type': 'float', '_default': 60.0},
         'rng_seed': {'_type': 'integer', '_default': 0},
     }
 
@@ -100,6 +111,10 @@ class MedyanProcess(Process):
             'bending_energy': 'overwrite[float]',
             'stretch_energy': 'overwrite[float]',
             'total_energy': 'overwrite[float]',
+            'membrane_area': 'overwrite[float]',
+            'membrane_volume': 'overwrite[float]',
+            'membrane_mean_radius': 'overwrite[float]',
+            'membrane_bending_energy': 'overwrite[float]',
         }
 
     def _build_engine(self) -> None:
@@ -117,7 +132,13 @@ class MedyanProcess(Process):
                 'cylinder_stiffness', 'bending_stiffness',
                 'boundary_force_scale', 'drag_coefficient',
                 'bind_radius', 'crosslink_unbind_rate', 'motor_unbind_rate',
-                'seed_region_fraction', 'rng_seed',
+                'seed_region_fraction', 'seed_mode',
+                'enable_membrane', 'membrane_radius', 'membrane_subdivisions',
+                'membrane_edge_stiffness', 'membrane_bending_stiffness',
+                'membrane_pressure', 'membrane_drag',
+                'membrane_filament_coupling_radius',
+                'membrane_filament_coupling_strength',
+                'rng_seed',
             )
         }
         self._engine = MedyanEngine(**engine_kwargs)

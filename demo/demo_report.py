@@ -90,6 +90,49 @@ CONFIGS = [
         'color_scheme': 'rose',
     },
     {
+        'id': 'filopodia',
+        'title': 'Vesicle Filopodial Protrusion',
+        'subtitle': 'Polymerizing actin pushes a deformable membrane outward',
+        'description': (
+            'Eighteen actin filaments seeded radially inside a closed '
+            'icosphere vesicle. Plus-end polymerization drives each tip '
+            'into the membrane, where contact forces transmit Brownian-'
+            'ratchet feedback: the membrane locally bulges outward into '
+            'filopodia-like protrusions while the lipid bilayer '
+            '(modeled as edge-spring elasticity plus Laplacian bending) '
+            'resists global expansion. This is the canonical mechano-'
+            'chemical coupling that generates lamellipodia, filopodia, '
+            'and microvilli in real cells.'
+        ),
+        'config': {
+            'box_size': 2.0,
+            'n_filaments': 18,
+            'initial_filament_length': 0.25,
+            'seed_mode': 'radial',
+            'actin_concentration': 8.0,
+            'k_on_plus': 12.0, 'k_off_plus': 1.0,
+            'k_on_minus': 0.5, 'k_off_minus': 1.5,
+            'n_motors': 0,
+            'n_crosslinks': 0,
+            'enable_membrane': True,
+            'membrane_radius': 0.55,
+            'membrane_subdivisions': 2,
+            'membrane_edge_stiffness': 8.0,
+            'membrane_bending_stiffness': 1.5,
+            'membrane_pressure': 0.0,
+            'membrane_drag': 25.0,
+            'membrane_filament_coupling_radius': 0.12,
+            'membrane_filament_coupling_strength': 120.0,
+            'boundary_force_scale': 2.0,
+            'rng_seed': 31,
+            'n_substeps': 10,
+        },
+        'n_snapshots': 35,
+        'total_time': 8.0,
+        'camera': [1.6, 1.2, 1.6],
+        'color_scheme': 'amber',
+    },
+    {
         'id': 'dendritic',
         'title': 'Dendritic Crosslinked Mesh',
         'subtitle': 'Dense passive crosslinker network under net polymerization',
@@ -132,6 +175,8 @@ COLOR_SCHEMES = {
                 'bg': '#ecfdf5', 'accent': '#34d399', 'text': '#064e3b'},
     'rose': {'primary': '#f43f5e', 'light': '#ffe4e6', 'dark': '#e11d48',
              'bg': '#fff1f2', 'accent': '#fb7185', 'text': '#881337'},
+    'amber': {'primary': '#f59e0b', 'light': '#fef3c7', 'dark': '#b45309',
+              'bg': '#fffbeb', 'accent': '#fcd34d', 'text': '#78350f'},
 }
 
 
@@ -166,6 +211,14 @@ def _snapshot(engine, metrics):
     snap['metrics'] = {k: float(v) if isinstance(v, (int, float, np.floating, np.integer))
                        else v for k, v in metrics.items()}
     return snap
+
+
+def _faces_for_frame(snapshots):
+    """Return the (constant) membrane face indices, or None if no membrane."""
+    s0 = snapshots[0]
+    if s0.get('membrane') is None:
+        return None
+    return s0['membrane']['faces']
 
 
 # ── Bigraph diagram ────────────────────────────────────────────────
@@ -256,15 +309,20 @@ def generate_html(sim_results, output_path):
         cs = COLOR_SCHEMES[cfg['color_scheme']]
 
         # JS data: list of frames; each frame contains line segments + motor/cl dots
+        # Membrane faces are constant — extract once; vertices vary per frame.
+        mem_faces = _faces_for_frame(snapshots)
         frames = []
         for s in snapshots:
-            frames.append({
+            frame = {
                 'time': round(s['time'], 2),
                 'filaments': s['filaments'],
                 'motors': s['motors'],
                 'crosslinks': s['crosslinks'],
                 'metrics': s['metrics'],
-            })
+            }
+            if s.get('membrane') is not None:
+                frame['membrane_vertices'] = s['membrane']['vertices']
+            frames.append(frame)
 
         # Per-config metrics
         first = snapshots[0]['metrics']
@@ -278,6 +336,11 @@ def generate_html(sim_results, output_path):
         e_last = float(last.get('total_energy', 0.0))
         m_last = int(last.get('n_motors', 0))
         x_last = int(last.get('n_crosslinks', 0))
+        has_membrane = mem_faces is not None
+        mem_v0 = float(first.get('membrane_volume', 0.0))
+        mem_v1 = float(last.get('membrane_volume', 0.0))
+        mem_a1 = float(last.get('membrane_area', 0.0))
+        mem_be1 = float(last.get('membrane_bending_energy', 0.0))
 
         # Time-series for charts
         times = [f['time'] for f in frames]
@@ -289,6 +352,10 @@ def generate_html(sim_results, output_path):
         n_motors_series = [f['metrics'].get('n_motors', 0) for f in frames]
         n_xl_series = [f['metrics'].get('n_crosslinks', 0) for f in frames]
         mean_len_series = [f['metrics'].get('mean_filament_length', 0.0) for f in frames]
+        mem_vol_series = [f['metrics'].get('membrane_volume', 0.0) for f in frames]
+        mem_area_series = [f['metrics'].get('membrane_area', 0.0) for f in frames]
+        mem_be_series = [f['metrics'].get('membrane_bending_energy', 0.0) for f in frames]
+        mem_r_series = [f['metrics'].get('membrane_mean_radius', 0.0) for f in frames]
 
         # Compute scene scale for camera framing
         all_pts = []
@@ -306,6 +373,8 @@ def generate_html(sim_results, output_path):
             'scene_center': scene_center,
             'scene_extent': scene_extent,
             'primary_color': cs['primary'],
+            'membrane_faces': mem_faces if has_membrane else None,
+            'has_membrane': has_membrane,
             'charts': {
                 'times': times,
                 'total_length': total_len,
@@ -316,6 +385,10 @@ def generate_html(sim_results, output_path):
                 'stretch_energy': stretch_e,
                 'n_motors': n_motors_series,
                 'n_crosslinks': n_xl_series,
+                'membrane_volume': mem_vol_series,
+                'membrane_area': mem_area_series,
+                'membrane_bending_energy': mem_be_series,
+                'membrane_radius': mem_r_series,
             },
         }
 
@@ -339,6 +412,8 @@ def generate_html(sim_results, output_path):
         <div class="metric"><span class="metric-label">Network Span</span><span class="metric-value">{s1:.2f}</span><span class="metric-sub">{s0:.2f} &rarr; {s1:.2f} &mu;m</span></div>
         <div class="metric"><span class="metric-label">Motors</span><span class="metric-value">{m_last}</span></div>
         <div class="metric"><span class="metric-label">Crosslinks</span><span class="metric-value">{x_last}</span></div>
+        {('<div class="metric"><span class="metric-label">Vesicle Vol</span><span class="metric-value">' + f'{mem_v1:.3f}' + '</span><span class="metric-sub">' + f'{mem_v0:.3f} &rarr; {mem_v1:.3f}' + '</span></div>') if has_membrane else ''}
+        {('<div class="metric"><span class="metric-label">Mem Bending</span><span class="metric-value">' + f'{mem_be1:.3f}' + '</span></div>') if has_membrane else ''}
         <div class="metric"><span class="metric-label">Energy</span><span class="metric-value">{e_last:.2e}</span></div>
         <div class="metric"><span class="metric-label">Snapshots</span><span class="metric-value">{len(frames)}</span></div>
         <div class="metric"><span class="metric-label">Runtime</span><span class="metric-value">{runtime:.1f}s</span></div>
@@ -348,9 +423,9 @@ def generate_html(sim_results, output_path):
       <div class="viewer-wrap">
         <canvas id="canvas-{sid}" class="mesh-canvas"></canvas>
         <div class="viewer-info">
-          <strong>Filaments</strong> as cyan lines &middot;
-          <strong>Motors</strong> as red dumbbells &middot;
-          <strong>Crosslinks</strong> as yellow tethers<br>
+          {'<strong>Vesicle</strong> (translucent) wraps the network &middot; ' if has_membrane else ''}<strong>Filaments</strong> cyan &middot;
+          <strong>Motors</strong> red &middot;
+          <strong>Crosslinks</strong> yellow<br>
           Drag to rotate &middot; Scroll to zoom
         </div>
         <div class="legend-box">
@@ -358,6 +433,7 @@ def generate_html(sim_results, output_path):
           <div class="lg-row"><span class="lg-swatch" style="background:#22d3ee;"></span> Actin filament</div>
           <div class="lg-row"><span class="lg-swatch" style="background:#f43f5e;"></span> Myosin II motor</div>
           <div class="lg-row"><span class="lg-swatch" style="background:#fbbf24;"></span> &alpha;-actinin crosslink</div>
+          {'<div class="lg-row"><span class="lg-swatch" style="background:#a78bfa; height:8px;"></span> Lipid vesicle</div>' if has_membrane else ''}
         </div>
         <div class="slider-controls">
           <button class="play-btn" style="border-color:{cs['primary']}; color:{cs['primary']};" onclick="togglePlay('{sid}')">Play</button>
@@ -373,7 +449,7 @@ def generate_html(sim_results, output_path):
         <div class="chart-box"><div id="chart-length-{sid}" class="chart"></div></div>
         <div class="chart-box"><div id="chart-span-{sid}" class="chart"></div></div>
         <div class="chart-box"><div id="chart-energy-{sid}" class="chart"></div></div>
-        <div class="chart-box"><div id="chart-binding-{sid}" class="chart"></div></div>
+        <div class="chart-box"><div id="chart-{'membrane' if has_membrane else 'binding'}-{sid}" class="chart"></div></div>
       </div>
 
       <div class="pbg-row">
@@ -702,6 +778,36 @@ function initViewer(sid) {{
   const xlLines = new THREE.LineSegments(xlGeo, xlMat);
   scene.add(xlLines);
 
+  // Membrane (translucent triangulated vesicle)
+  let memMesh = null, memWire = null, memGeo = null;
+  if (d.has_membrane && d.membrane_faces) {{
+    memGeo = new THREE.BufferGeometry();
+    const verts0 = d.frames[0].membrane_vertices || [];
+    const positions = new Float32Array(verts0.length * 3);
+    for (let i = 0; i < verts0.length; i++) {{
+      positions[i*3] = verts0[i][0];
+      positions[i*3+1] = verts0[i][1];
+      positions[i*3+2] = verts0[i][2];
+    }}
+    const indices = [];
+    for (const tri of d.membrane_faces) {{
+      indices.push(tri[0], tri[1], tri[2]);
+    }}
+    memGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    memGeo.setIndex(indices);
+    memGeo.computeVertexNormals();
+    const memMat = new THREE.MeshPhongMaterial({{
+      color:0xa78bfa, transparent:true, opacity:0.32,
+      side:THREE.DoubleSide, shininess:60, specular:0xddd6fe,
+      flatShading:false, depthWrite:false,
+    }});
+    memMesh = new THREE.Mesh(memGeo, memMat);
+    scene.add(memMesh);
+    const wireMat = new THREE.LineBasicMaterial({{color:0xc4b5fd, transparent:true, opacity:0.35}});
+    memWire = new THREE.LineSegments(new THREE.WireframeGeometry(memGeo), wireMat);
+    scene.add(memWire);
+  }}
+
   function updateFrame(idx) {{
     const f = d.frames[idx];
     filGeo.setAttribute('position', new THREE.BufferAttribute(makeFilamentLines(f), 3));
@@ -714,6 +820,24 @@ function initViewer(sid) {{
     motPtGeo.attributes.position.needsUpdate = true;
     xlGeo.setAttribute('position', new THREE.BufferAttribute(makeXlLines(f), 3));
     xlGeo.attributes.position.needsUpdate = true;
+    if (memMesh && f.membrane_vertices) {{
+      const arr = memGeo.attributes.position.array;
+      const v = f.membrane_vertices;
+      for (let i = 0; i < v.length; i++) {{
+        arr[i*3] = v[i][0];
+        arr[i*3+1] = v[i][1];
+        arr[i*3+2] = v[i][2];
+      }}
+      memGeo.attributes.position.needsUpdate = true;
+      memGeo.computeVertexNormals();
+      // Update wireframe geometry as well
+      scene.remove(memWire);
+      memWire.geometry.dispose();
+      memWire = new THREE.LineSegments(
+        new THREE.WireframeGeometry(memGeo),
+        memWire.material);
+      scene.add(memWire);
+    }}
   }}
 
   const slider = document.getElementById('slider-' + sid);
@@ -807,17 +931,32 @@ Object.keys(DATA).forEach(sid => {{
     showlegend:true, legend:{{ font:{{ size:9 }}, bgcolor:'rgba(0,0,0,0)' }},
   }}, pCfg);
 
-  Plotly.newPlot('chart-binding-'+sid, [
-    {{ x:c.times, y:c.n_motors, type:'scatter', mode:'lines+markers',
-       line:{{ color:'#f43f5e', width:1.8 }}, marker:{{ size:3 }}, name:'Motors',
-       fill:'tozeroy', fillcolor:'rgba(244,63,94,.07)' }},
-    {{ x:c.times, y:c.n_crosslinks, type:'scatter', mode:'lines+markers',
-       line:{{ color:'#fbbf24', width:1.8 }}, marker:{{ size:3 }}, name:'Crosslinks',
-       fill:'tozeroy', fillcolor:'rgba(251,191,36,.07)' }},
-  ], {{...pLayout, title:{{ text:'Bound Motors &amp; Crosslinks', font:{{ size:12, color:'#334155' }} }},
-    yaxis:{{...pLayout.yaxis, title:{{ text:'Count', font:{{ size:10 }} }} }},
-    showlegend:true, legend:{{ font:{{ size:9 }}, bgcolor:'rgba(0,0,0,0)' }},
-  }}, pCfg);
+  if (DATA[sid].has_membrane) {{
+    Plotly.newPlot('chart-membrane-'+sid, [
+      {{ x:c.times, y:c.membrane_volume, type:'scatter', mode:'lines+markers',
+         line:{{ color:'#a78bfa', width:2 }}, marker:{{ size:4 }}, name:'Volume',
+         fill:'tozeroy', fillcolor:'rgba(167,139,250,.10)' }},
+      {{ x:c.times, y:c.membrane_bending_energy, type:'scatter', mode:'lines+markers', yaxis:'y2',
+         line:{{ color:'#f59e0b', width:1.5, dash:'dot' }}, marker:{{ size:3 }}, name:'Bend energy' }},
+    ], {{...pLayout, title:{{ text:'Vesicle Volume &amp; Mem Bending', font:{{ size:12, color:'#334155' }} }},
+      yaxis:{{...pLayout.yaxis, title:{{ text:'Volume (μm³)', font:{{ size:10 }} }} }},
+      yaxis2:{{ overlaying:'y', side:'right', gridcolor:'transparent',
+                title:{{ text:'Bending E', font:{{ size:10 }} }} }},
+      showlegend:true, legend:{{ font:{{ size:9 }}, bgcolor:'rgba(0,0,0,0)' }},
+    }}, pCfg);
+  }} else {{
+    Plotly.newPlot('chart-binding-'+sid, [
+      {{ x:c.times, y:c.n_motors, type:'scatter', mode:'lines+markers',
+         line:{{ color:'#f43f5e', width:1.8 }}, marker:{{ size:3 }}, name:'Motors',
+         fill:'tozeroy', fillcolor:'rgba(244,63,94,.07)' }},
+      {{ x:c.times, y:c.n_crosslinks, type:'scatter', mode:'lines+markers',
+         line:{{ color:'#fbbf24', width:1.8 }}, marker:{{ size:3 }}, name:'Crosslinks',
+         fill:'tozeroy', fillcolor:'rgba(251,191,36,.07)' }},
+    ], {{...pLayout, title:{{ text:'Bound Motors &amp; Crosslinks', font:{{ size:12, color:'#334155' }} }},
+      yaxis:{{...pLayout.yaxis, title:{{ text:'Count', font:{{ size:10 }} }} }},
+      showlegend:true, legend:{{ font:{{ size:9 }}, bgcolor:'rgba(0,0,0,0)' }},
+    }}, pCfg);
+  }}
 }});
 </script>
 </body>

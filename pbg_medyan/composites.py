@@ -7,6 +7,8 @@ _NETWORK_METRIC_PORTS = (
     'total_length', 'mean_filament_length',
     'network_span', 'radius_of_gyration',
     'bending_energy', 'stretch_energy', 'total_energy',
+    'membrane_area', 'membrane_volume', 'membrane_mean_radius',
+    'membrane_bending_energy',
 )
 
 

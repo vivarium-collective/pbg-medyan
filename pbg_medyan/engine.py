@@ -27,9 +27,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional  # noqa: F401
 
 import numpy as np
+
+from pbg_medyan.membrane import (
+    Membrane,
+    membrane_forces,
+    filament_membrane_coupling,
+)
 
 
 MONOMER_LENGTH = 0.0027  # micrometers per actin monomer (~2.7 nm)
@@ -182,6 +188,17 @@ class MedyanEngine:
         crosslink_unbind_rate: float = 0.05,
         motor_unbind_rate: float = 0.1,
         seed_region_fraction: float = 0.6,
+        seed_mode: str = 'random',
+        # Membrane (off by default)
+        enable_membrane: bool = False,
+        membrane_radius: float = 0.6,
+        membrane_subdivisions: int = 2,
+        membrane_edge_stiffness: float = 30.0,
+        membrane_bending_stiffness: float = 2.0,
+        membrane_pressure: float = 0.0,
+        membrane_drag: float = 30.0,
+        membrane_filament_coupling_radius: float = 0.08,
+        membrane_filament_coupling_strength: float = 60.0,
         rng_seed: int = 0,
     ):
         self.box_size = float(box_size)
@@ -203,6 +220,22 @@ class MedyanEngine:
         self.crosslink_unbind_rate = float(crosslink_unbind_rate)
         self.motor_unbind_rate = float(motor_unbind_rate)
         self.seed_region_fraction = float(seed_region_fraction)
+        self.seed_mode = str(seed_mode)
+        self.enable_membrane = bool(enable_membrane)
+        self.membrane_edge_stiffness = float(membrane_edge_stiffness)
+        self.membrane_bending_stiffness = float(membrane_bending_stiffness)
+        self.membrane_pressure = float(membrane_pressure)
+        self.membrane_drag = float(membrane_drag)
+        self.membrane_filament_coupling_radius = float(membrane_filament_coupling_radius)
+        self.membrane_filament_coupling_strength = float(membrane_filament_coupling_strength)
+        self.membrane: Optional[Membrane] = None
+        if self.enable_membrane:
+            center = np.full(3, 0.5 * self.box_size)
+            self.membrane = Membrane.icosphere(
+                radius=float(membrane_radius),
+                subdivisions=int(membrane_subdivisions),
+                center=center,
+            )
 
         seed = rng_seed if rng_seed else None
         self.rng = np.random.default_rng(seed)
@@ -212,7 +245,10 @@ class MedyanEngine:
         self.motors: List[Motor] = []
         self.crosslinks: List[Crosslink] = []
 
-        self._seed_filaments(n_filaments, initial_filament_length)
+        if self.seed_mode == 'radial' and self.membrane is not None:
+            self._seed_filaments_radial(n_filaments, initial_filament_length)
+        else:
+            self._seed_filaments(n_filaments, initial_filament_length)
         self._seed_motors(n_motors)
         self._seed_crosslinks(n_crosslinks)
 
@@ -234,6 +270,27 @@ class MedyanEngine:
             center = self.rng.uniform(lo, hi, size=3)
             axis = self._random_unit_vec()
             start = center - 0.5 * length * axis
+            beads = np.array([start + i * seg_len * axis for i in range(n_seg + 1)])
+            rest = np.full(n_seg, seg_len)
+            self.filaments.append(Filament(beads=beads, rest_lengths=rest))
+
+    def _seed_filaments_radial(self, n: int, length: float) -> None:
+        """Seed filaments inside the membrane, pointing radially outward.
+
+        The minus end sits at a random interior point; the plus end is
+        placed near (but inside) the membrane surface so polymerization
+        can push the membrane.
+        """
+        n_seg = max(1, int(round(length / 0.05)))
+        seg_len = length / n_seg
+        cx = self.membrane.center
+        R = self.membrane.mean_radius()
+        for _ in range(n):
+            axis = self._random_unit_vec()
+            # Tip placed at ~0.7 R from center along the axis,
+            # so that the filament is mostly inside the membrane initially.
+            tip = cx + 0.7 * R * axis
+            start = tip - length * axis  # minus end is inside, behind the tip
             beads = np.array([start + i * seg_len * axis for i in range(n_seg + 1)])
             rest = np.full(n_seg, seg_len)
             self.filaments.append(Filament(beads=beads, rest_lengths=rest))
@@ -512,12 +569,36 @@ class MedyanEngine:
 
     def _relax(self, dt: float, n_substeps: int = 4) -> None:
         sub_dt = dt / n_substeps
+        inv_drag = 1.0 / self.drag_coefficient
+        inv_mem_drag = 1.0 / self.membrane_drag if self.membrane_drag > 0 else 0.0
         for _ in range(n_substeps):
             forces = self._accumulate_forces()
+            # Filament–membrane coupling (mutual ratchet contact)
+            if self.membrane is not None:
+                f_mem_couple, plus_end_extra = filament_membrane_coupling(
+                    self.filaments, self.membrane,
+                    coupling_radius=self.membrane_filament_coupling_radius,
+                    coupling_strength=self.membrane_filament_coupling_strength,
+                )
+                for i, fil in enumerate(self.filaments):
+                    if fil.n_beads > 0:
+                        forces[i][-1] += plus_end_extra[i]
+            else:
+                f_mem_couple = None
             self._project_boundary_forces(forces)
-            inv_drag = 1.0 / self.drag_coefficient
             for i, fil in enumerate(self.filaments):
                 fil.beads = fil.beads + sub_dt * inv_drag * forces[i]
+            if self.membrane is not None:
+                f_mem = membrane_forces(
+                    self.membrane,
+                    edge_stiffness=self.membrane_edge_stiffness,
+                    pressure=self.membrane_pressure,
+                    bending_stiffness=self.membrane_bending_stiffness,
+                )
+                if f_mem_couple is not None:
+                    f_mem = f_mem + f_mem_couple
+                self.membrane.vertices = (
+                    self.membrane.vertices + sub_dt * inv_mem_drag * f_mem)
 
     # ── public API ─────────────────────────────────────────────────
 
@@ -572,6 +653,23 @@ class MedyanEngine:
                 L = float(np.linalg.norm(d))
                 stretch_e += 0.5 * self.cylinder_stiffness * (L - fil.rest_lengths[s]) ** 2
 
+        # Membrane metrics
+        if self.membrane is not None:
+            mem_area = self.membrane.total_area()
+            mem_vol = self.membrane.total_volume()
+            mem_radius = self.membrane.mean_radius()
+            # Edge-stretch energy as bending proxy
+            a = self.membrane.vertices[self.membrane.edges[:, 0]]
+            b = self.membrane.vertices[self.membrane.edges[:, 1]]
+            L = np.linalg.norm(a - b, axis=1)
+            mem_bend_e = float(0.5 * self.membrane_edge_stiffness *
+                               np.sum((L - self.membrane.rest_edge_lengths) ** 2))
+        else:
+            mem_area = 0.0
+            mem_vol = 0.0
+            mem_radius = 0.0
+            mem_bend_e = 0.0
+
         return {
             'n_filaments': n_fil,
             'n_motors': len(self.motors),
@@ -582,12 +680,16 @@ class MedyanEngine:
             'radius_of_gyration': radius_of_gyration,
             'bending_energy': float(bending_e),
             'stretch_energy': float(stretch_e),
-            'total_energy': float(bending_e + stretch_e),
+            'total_energy': float(bending_e + stretch_e + mem_bend_e),
+            'membrane_area': mem_area,
+            'membrane_volume': mem_vol,
+            'membrane_mean_radius': mem_radius,
+            'membrane_bending_energy': mem_bend_e,
         }
 
     def snapshot(self) -> dict:
         """Full geometric snapshot for visualization."""
-        return {
+        snap = {
             'time': self.time,
             'filaments': [f.beads.tolist() for f in self.filaments],
             'motors': [
@@ -600,4 +702,12 @@ class MedyanEngine:
                  'b': [c.pos_b[0], c.pos_b[1], c.pos_b[2]]}
                 for c in self.crosslinks
             ],
+            'membrane': None,
         }
+        if self.membrane is not None:
+            snap['membrane'] = {
+                'vertices': self.membrane.vertices.tolist(),
+                'faces': self.membrane.faces.tolist(),
+                'center': self.membrane.center.tolist(),
+            }
+        return snap

@@ -21,6 +21,10 @@ mechanics:
   with linear springs and stochastic unbinding.
 - **Overdamped force relaxation** of bead positions under cylinder
   stretch, bending, motor, and crosslink forces.
+- **Optional triangulated vesicle membrane** (icosphere mesh with edge
+  springs + Laplacian bending) that couples to filament plus-ends:
+  polymerizing tips push membrane vertices outward and feel a reaction
+  force back through the Brownian-ratchet feedback loop.
 
 The implementation is a self-contained Python engine — no compilation of
 the upstream MEDYAN C++ code is required — and is sized for interactive
@@ -84,7 +88,11 @@ print(results[-1])
 | `radius_of_gyration` | output | `overwrite[float]` | network R_g (μm) |
 | `bending_energy` | output | `overwrite[float]` | sum of bending energy |
 | `stretch_energy` | output | `overwrite[float]` | sum of cylinder stretch energy |
-| `total_energy` | output | `overwrite[float]` | bending + stretch |
+| `total_energy` | output | `overwrite[float]` | bending + stretch + membrane bending |
+| `membrane_area` | output | `overwrite[float]` | total mesh surface area (μm²) |
+| `membrane_volume` | output | `overwrite[float]` | enclosed vesicle volume (μm³) |
+| `membrane_mean_radius` | output | `overwrite[float]` | mean vertex distance from center (μm) |
+| `membrane_bending_energy` | output | `overwrite[float]` | edge-spring deformation energy |
 
 Key config fields (see `MedyanProcess.config_schema` for the full list):
 
@@ -110,6 +118,15 @@ Key config fields (see `MedyanProcess.config_schema` for the full list):
 | `drag_coefficient` | `40.0` | overdamped friction |
 | `bind_radius` | `0.2` | motor/crosslink capture radius (μm) |
 | `n_substeps` | `8` | integration sub-steps per `update()` call |
+| `seed_mode` | `'random'` | seed filaments at random or `'radial'` (outward inside membrane) |
+| `enable_membrane` | `False` | wrap network in a closed triangulated vesicle |
+| `membrane_radius` | `0.6` | initial vesicle radius (μm) |
+| `membrane_subdivisions` | `2` | icosphere subdivisions (1 → 42 verts, 2 → 162, 3 → 642) |
+| `membrane_edge_stiffness` | `30.0` | edge spring constant (in-plane / area resistance) |
+| `membrane_bending_stiffness` | `2.0` | Laplacian-smoothing bending modulus |
+| `membrane_pressure` | `0.0` | constant outward pressure (positive = inflating) |
+| `membrane_filament_coupling_radius` | `0.08` | filament tip ↔ vertex contact range (μm) |
+| `membrane_filament_coupling_strength` | `60.0` | contact force constant (pN/μm) |
 | `rng_seed` | `0` | reproducibility seed (`0` = nondeterministic) |
 
 ### `make_network_document(interval, **process_config)`
@@ -165,12 +182,15 @@ python demo/demo_report.py
 open demo/report.html      # opens in default browser
 ```
 
-The report runs three configurations (treadmilling polymerization,
-actomyosin contractility, dendritic crosslinked mesh) and produces a
-self-contained HTML page with:
+The report runs four configurations (treadmilling polymerization,
+actomyosin contractility, **vesicle filopodial protrusion**, and
+dendritic crosslinked mesh) and produces a self-contained HTML page with:
 
-- interactive Three.js 3D viewer with time slider + play/pause
-- Plotly time-series charts (length, span, energy, binding counts)
+- interactive Three.js 3D viewer with time slider + play/pause; in the
+  vesicle config the membrane is rendered as a translucent
+  triangulated mesh that deforms in response to filament tip pushing
+- Plotly time-series charts (length, span, energy, binding counts; or
+  vesicle volume + membrane bending energy when a membrane is active)
 - color-coded bigraph-viz architecture PNG (left → right layout)
 - collapsible JSON tree of the composite document
 
