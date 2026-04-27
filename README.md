@@ -255,7 +255,17 @@ print(proc.update({}, interval=1.0))
 print(proc.update({}, interval=1.0))
 ```
 
-A runnable smoke test lives at [`demo/cxx_smoke.py`](demo/cxx_smoke.py).
+Two demo scripts ship with the package:
+
+- [`demo/cxx_smoke.py`](demo/cxx_smoke.py) — minimal sanity check
+  (3 back-to-back intervals, prints metrics)
+- [`demo/cxx_demo_report.py`](demo/cxx_demo_report.py) — full
+  multi-config interactive HTML report (3 configs: sparse
+  treadmilling, dense polymerizing network, actomyosin contractility),
+  Three.js viewer with filaments / linkers / motors / branchers,
+  Plotly charts, bigraph-viz architecture diagram, JSON document
+  tree, sticky nav. Auto-opens in Safari on macOS. Output goes to
+  `demo/cxx_report.html`.
 
 ### Restart fidelity (read this!)
 

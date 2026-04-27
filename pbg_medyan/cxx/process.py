@@ -34,8 +34,10 @@ from pbg_medyan.cxx import io as medyan_io
 from pbg_medyan.cxx.templates import PRESETS
 
 
-# Default keyword set for systeminput.txt — these match the upstream
-# actin_only / actomyosin examples and are used as the baseline.
+# Default keyword set for systeminput.txt. Mirrors the values used by
+# MEDYAN's upstream examples/50filaments_motor_linker/systeminput.txt
+# so any of the bundled chemistry presets (actin_only,
+# actin_motor_linker) works without further configuration.
 _BASE_DEFAULTS: Dict[str, Any] = {
     # Geometry
     'NX': 2, 'NY': 2, 'NZ': 2,
@@ -48,6 +50,20 @@ _BASE_DEFAULTS: Dict[str, Any] = {
     'FSTRETCHINGFFTYPE': 'HARMONIC', 'FSTRETCHINGK': 100.0,
     'FBENDINGFFTYPE': 'COSINE',     'FBENDINGK': 672.0, 'FBENDINGTHETA': 0.0,
     'VOLUMEFFTYPE': 'integral',     'VOLUMECUTOFF': 135.0, 'VOLUMEK': 8.57,
+    # Mechanics — non-muscle myosin IIA
+    'MSTRETCHINGFFTYPE': 'HARMONIC', 'MSTRETCHINGK': 2.5,
+    'NUMMOTORHEADSMIN': 15, 'NUMMOTORHEADSMAX': 30,
+    'MOTORSTEPSIZE': 6.0,
+    'DMUNBINDINGTYPE': 'LOWDUTYCATCH', 'DMUNBINDINGFORCE': 12.62,
+    'DMWALKINGTYPE': 'LOWDUTYSTALL',   'DMWALKINGFORCE': 90.0,
+    # Mechanics — alpha-actinin linker
+    'LSTRETCHINGFFTYPE': 'HARMONIC', 'LSTRETCHINGK': 8.0,
+    'DLUNBINDINGTYPE': 'SLIP', 'DLUNBINDINGLEN': 0.24,
+    # Mechanics — Arp2/3 brancher
+    'BRSTRETCHINGFFTYPE': 'HARMONIC', 'BRSTRETCHINGK': 100.0, 'BRSTRETCHINGL': 6.0,
+    'BRBENDINGFFTYPE': 'COSINE', 'BRBENDINGK': 10.0, 'BRBENDINGTHETA': 1.22,
+    'BRDIHEDRALFFTYPE': 'COSINE', 'BRDIHEDRALK': 10.0,
+    'BRPOSITIONFFTYPE': 'COSINE', 'BRPOSITIONK': 20.0,
     # Boundary
     'BOUNDARYFFTYPE': 'REPULSIONEXP',
     'BOUNDARYCUTOFF': 300.0,
