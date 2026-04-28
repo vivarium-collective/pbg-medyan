@@ -22,6 +22,7 @@ explicitly at the boundary.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -193,7 +194,12 @@ class MedyanCxxProcess(Process):
     # ── PBG plumbing ──────────────────────────────────────────────
 
     def inputs(self):
-        return {}
+        # Composability hook: another PBG process can drive MEDYAN's
+        # G-actin (AD) diffusing-species copy number on each update().
+        # When unset, the chemistry preset / text is used as-is.
+        return {
+            'actin_copy': 'maybe[integer]',
+        }
 
     def outputs(self):
         return {
@@ -249,22 +255,40 @@ class MedyanCxxProcess(Process):
         explicit = self.config.get('binary_path') or None
         self._binary = medyan_io.find_medyan_binary(explicit)
 
-    def _resolve_chemistry(self, run_dir: str) -> str:
-        """Write or copy the chemistry file into ``run_dir`` and return its name."""
+    def _resolve_chemistry(
+        self,
+        run_dir: str,
+        actin_copy_override: Optional[int] = None,
+    ) -> str:
+        """Write or copy the chemistry file into ``run_dir`` and return its name.
+
+        If ``actin_copy_override`` is given, the AD diffusing-species copy
+        number in the chemistry text is rewritten before saving — this is
+        the plumbing that lets a sibling PBG process modulate G-actin
+        availability between intervals.
+        """
         chem_path_cfg = self.config.get('chemistry_path', '')
         if chem_path_cfg:
-            target = os.path.join(run_dir, 'chemistryinput.txt')
-            shutil.copy(chem_path_cfg, target)
-            return 'chemistryinput.txt'
-        text = self.config.get('chemistry_text', '') or ''
-        if not text:
-            preset = self.config.get('chemistry_preset', 'actin_only')
-            if preset not in PRESETS:
-                raise ValueError(
-                    f"Unknown chemistry_preset {preset!r}; "
-                    f"choose from {list(PRESETS)}, "
-                    "or pass chemistry_text/chemistry_path.")
-            text = PRESETS[preset]
+            with open(chem_path_cfg) as f:
+                text = f.read()
+        else:
+            text = self.config.get('chemistry_text', '') or ''
+            if not text:
+                preset = self.config.get('chemistry_preset', 'actin_only')
+                if preset not in PRESETS:
+                    raise ValueError(
+                        f"Unknown chemistry_preset {preset!r}; "
+                        f"choose from {list(PRESETS)}, "
+                        "or pass chemistry_text/chemistry_path.")
+                text = PRESETS[preset]
+
+        if actin_copy_override is not None:
+            # Replace the AD diffusing-species copy number.
+            # Format: SPECIESDIFFUSING: AD <copy> <diff> <release> <removal> REG
+            text = re.sub(
+                r'(SPECIESDIFFUSING:\s*AD\s+)\d+',
+                rf'\g<1>{int(actin_copy_override)}',
+                text)
         target = os.path.join(run_dir, 'chemistryinput.txt')
         medyan_io.write_chemistry_input(target, text)
         return 'chemistryinput.txt'
@@ -355,7 +379,12 @@ class MedyanCxxProcess(Process):
         out_dir = os.path.join(run_dir, 'output')
         os.makedirs(out_dir, exist_ok=True)
 
-        chem_filename = self._resolve_chemistry(run_dir)
+        actin_copy_override = None
+        if isinstance(state, dict):
+            ac = state.get('actin_copy')
+            if ac is not None:
+                actin_copy_override = int(ac)
+        chem_filename = self._resolve_chemistry(run_dir, actin_copy_override)
         is_restart = self._last_frame is not None
         if is_restart:
             medyan_io.write_filament_file(
