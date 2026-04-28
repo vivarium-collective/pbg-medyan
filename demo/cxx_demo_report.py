@@ -172,11 +172,11 @@ def run_vesicle(binary: str) -> Dict[str, Any]:
     proc = MedyanCxxProcess(config={
         'binary_path': binary,
         'n_filaments': 6, 'filament_length': 2,        # 216 nm filaments in a 500 nm vesicle
-        'snapshot_interval': 0.1, 'minimization_interval': 0.005,
         # Tight gradient tolerance keeps the small vesicle stable between
         # chemistry ticks; the upstream big-vesicle example's loose 5.0
-        # value spirals on this smaller mesh.
+        # spirals on this smaller mesh.
         'gradient_tolerance': 0.1, 'max_distance': 0.2,
+        'snapshot_interval': 0.03, 'minimization_interval': 0.005,
         'compartment_size': 500.0, 'nx': 4, 'ny': 4, 'nz': 4,
         'chemistry_preset': 'actin_only',
         'enable_membrane': True,
@@ -184,24 +184,37 @@ def run_vesicle(binary: str) -> Dict[str, Any]:
         'membrane_center_x': 1000.0, 'membrane_center_y': 1000.0, 'membrane_center_z': 1000.0,
         'membrane_radius_x': 500.0, 'membrane_radius_y': 500.0, 'membrane_radius_z': 500.0,
         'membrane_bending_k': 50.0,
-        'timeout': 600.0,
+        'timeout': 1800.0,
     }, core=core)
     proc.initial_state()
 
-    interval = 0.3   # 0.3 s sim ≈ 25-30 s wall
-    n_intervals = 2
-    print(f'  running {n_intervals} intervals × {interval}s sim...')
-    snapshots = []
+    # ONE continuous 0.3-second MEDYAN run, snapshotted every 0.03 s →
+    # ~10 frames of natural intra-run evolution. Avoids the
+    # FILAMENTFILE+PREDEFINED restart re-gridding artifact that
+    # straightens filaments at every interval boundary.
+    #
+    # The vesicle subsystem is much more expensive than pure
+    # cytoskeleton sims — each chemistry tick triggers a full
+    # CG minimization over a ~3000-DoF mesh under triangle-bead
+    # repulsion forces, and the per-second cost rises super-
+    # linearly with sim time as filaments push harder against the
+    # membrane. 0.3 s is the sweet spot we've measured at ~25 s
+    # wall on Apple M-series with 6 filaments + a 500 nm vesicle.
+    interval = 0.3
+    print(f'  running 1 interval × {interval}s sim '
+          f'(snapshot every {proc.config["snapshot_interval"]}s)...')
     t0 = _time.perf_counter()
-    for i in range(n_intervals):
-        ts = _time.perf_counter()
-        result = proc.update({}, interval=interval)
-        frame = proc.get_last_frame()
-        snapshots.append(_frame_to_dict(frame, result))
-        print(f'    [{i+1}/{n_intervals}] wall={_time.perf_counter()-ts:.1f}s '
-              f'mem_R={result["membrane_mean_radius"]:.1f} nm, '
-              f'L_total={result["total_filament_length"]:.0f} nm')
+    proc.update({}, interval=interval)
+    frames = proc.get_last_frames()
     wall = _time.perf_counter() - t0
+    print(f'  wall={wall:.1f}s, {len(frames)} snapshots collected')
+
+    snapshots = []
+    for fr in frames:
+        metrics = MedyanCxxProcess._frame_metrics(fr, runtime=0.0)
+        snapshots.append(_frame_to_dict(fr, metrics))
+        print(f'    t={fr.time:.2f}s, mem_R={metrics["membrane_mean_radius"]:.1f} nm, '
+              f'L_total={metrics["total_filament_length"]:.0f} nm')
     return {
         'id': 'vesicle',
         'title': 'Vesicle Filopodia',

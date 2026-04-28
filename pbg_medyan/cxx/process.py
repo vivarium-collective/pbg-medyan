@@ -188,6 +188,7 @@ class MedyanCxxProcess(Process):
         self._workdir_owned = False
         self._run_index = 0
         self._last_frame: Optional[medyan_io.TrajFrame] = None
+        self._last_frames: List[medyan_io.TrajFrame] = []
         self._cumulative_time = 0.0
         self._extra_keywords = dict(extra_keywords or {})
 
@@ -434,6 +435,7 @@ class MedyanCxxProcess(Process):
 
         last = frames[-1]
         self._last_frame = last
+        self._last_frames = frames     # full per-snapshot trajectory of this update() call
         self._run_index += 1
         self._cumulative_time += float(interval)
 
@@ -513,6 +515,17 @@ class MedyanCxxProcess(Process):
 
     def get_last_frame(self) -> Optional[medyan_io.TrajFrame]:
         return self._last_frame
+
+    def get_last_frames(self) -> List[medyan_io.TrajFrame]:
+        """All frames written during the most recent ``update()`` call.
+
+        Useful for animation: a single MEDYAN run that emits a snapshot
+        every ``snapshot_interval`` seconds gives you the natural
+        intra-interval evolution of the network, with no
+        FILAMENTFILE-restart re-gridding artifacts. Returns an empty
+        list before the first ``update()`` call.
+        """
+        return list(self._last_frames)
 
     def cumulative_time(self) -> float:
         return self._cumulative_time
