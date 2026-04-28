@@ -1,45 +1,45 @@
 # pbg-medyan
 
 A [process-bigraph](https://github.com/vivarium-collective/process-bigraph)
-wrapper for [MEDYAN](https://medyan.org/)-style mechanochemical simulations
-of cytoskeletal active networks (actin filaments, myosin II minifilament
-motors, alpha-actinin crosslinkers).
+wrapper for the [MEDYAN](https://medyan.org/) cytoskeletal-network simulator.
+Two complementary Processes ship in this package:
 
-## What it does
+| | `MedyanProcess` | `MedyanCxxProcess` |
+| --- | --- | --- |
+| Engine | Pure-Python re-implementation | The actual MEDYAN C++ binary, driven via subprocess |
+| Install cost | `pip install -e .` | Build MEDYAN locally (~30 min, see [docs/macos_arm64_build.md](docs/macos_arm64_build.md)) |
+| Runtime | Real-time on a laptop (10–100 filaments) | Production MEDYAN performance |
+| Membrane support | Custom icosphere + Laplacian-bending model | MEDYAN's full deformable-vesicle subsystem (Helfrich + volume conservation), parsed from `traj.h5` |
+| Use it for | Prototyping, education, offline CI, testing PBG compositions | Validating against published MEDYAN behavior, real biophysics |
 
-`pbg-medyan` exposes a single time-driven `MedyanProcess` that simulates
-a network of semi-flexible actin filaments under combined chemistry and
-mechanics:
+The Python engine captures the qualitative MEDYAN physics (Brownian-ratchet
+polymerization, Hill-stall myosin walking, α-actinin tethering, overdamped
+relaxation, membrane–filament coupling); the C++ bridge runs the upstream
+simulator end-to-end and parses both the legacy `snapshot.traj` and the
+HDF5 `traj.h5` outputs.
 
-- **Brownian-ratchet polymerization** at both filament ends with separate
-  on/off rates for the barbed (plus) and pointed (minus) ends; force on
-  an end exponentially suppresses growth (Peskin et al., 1993).
-- **Hill-style myosin II motor walking** along filaments toward the plus
-  end with stall force `Fs`; bound motors generate contractile pulling
-  forces between filament pairs.
-- **Alpha-actinin-style passive crosslinkers** that tether nearby filaments
-  with linear springs and stochastic unbinding.
-- **Overdamped force relaxation** of bead positions under cylinder
-  stretch, bending, motor, and crosslink forces.
-- **Optional triangulated vesicle membrane** (icosphere mesh with edge
-  springs + Laplacian bending) that couples to filament plus-ends:
-  polymerizing tips push membrane vertices outward and feel a reaction
-  force back through the Brownian-ratchet feedback loop.
-
-The implementation is a self-contained Python engine — no compilation of
-the upstream MEDYAN C++ code is required — and is sized for interactive
-demos (10–100 filaments, 0–100 motors, 0–100 crosslinks) on a laptop.
+Public repo: <https://github.com/vivarium-collective/pbg-medyan>
 
 ## Installation
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/vivarium-collective/pbg-medyan.git
 cd pbg-medyan
 uv venv .venv && source .venv/bin/activate
 uv pip install -e .[dev]
 ```
 
-## Quick start
+Tests run offline by default:
+
+```bash
+pytest -v
+```
+
+The C++ integration tests in `tests/test_cxx_integration.py` are
+auto-skipped when no MEDYAN binary is found, so the offline suite stays
+green. Run them with `MEDYAN_BIN=/path/to/medyan pytest -v`.
+
+## Quick start — Python engine
 
 ```python
 from process_bigraph import Composite, allocate_core, gather_emitter_results
@@ -68,181 +68,9 @@ sim.run(20.0)
 
 results = gather_emitter_results(sim)[('emitter',)]
 print(results[-1])
-# {'n_filaments': 15, 'n_motors': 22, 'n_crosslinks': 35,
-#  'total_length': 8.4, 'network_span': 0.94, ...}
 ```
 
-## API reference
-
-### `MedyanProcess`
-
-| Field | Direction | Type | Notes |
-| --- | --- | --- | --- |
-| (no inputs) | — | — | internally driven |
-| `n_filaments` | output | `overwrite[integer]` | current filament count |
-| `n_motors` | output | `overwrite[integer]` | bound motor count |
-| `n_crosslinks` | output | `overwrite[integer]` | bound crosslink count |
-| `total_length` | output | `overwrite[float]` | sum of filament arc lengths (μm) |
-| `mean_filament_length` | output | `overwrite[float]` | mean filament length (μm) |
-| `network_span` | output | `overwrite[float]` | bounding-box diagonal of all beads (μm) |
-| `radius_of_gyration` | output | `overwrite[float]` | network R_g (μm) |
-| `bending_energy` | output | `overwrite[float]` | sum of bending energy |
-| `stretch_energy` | output | `overwrite[float]` | sum of cylinder stretch energy |
-| `total_energy` | output | `overwrite[float]` | bending + stretch + membrane bending |
-| `membrane_area` | output | `overwrite[float]` | total mesh surface area (μm²) |
-| `membrane_volume` | output | `overwrite[float]` | enclosed vesicle volume (μm³) |
-| `membrane_mean_radius` | output | `overwrite[float]` | mean vertex distance from center (μm) |
-| `membrane_bending_energy` | output | `overwrite[float]` | edge-spring deformation energy |
-
-Key config fields (see `MedyanProcess.config_schema` for the full list):
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `box_size` | `2.0` | cubic domain side length (μm) |
-| `n_filaments` | `10` | initial filaments to seed |
-| `initial_filament_length` | `0.4` | rest length per filament (μm) |
-| `seed_region_fraction` | `0.6` | fraction of box used for clustered seeding |
-| `actin_concentration` | `10.0` | free G-actin (μM) |
-| `k_on_plus`, `k_off_plus` | `11.6, 1.4` | barbed-end on/off rates |
-| `k_on_minus`, `k_off_minus` | `1.3, 0.8` | pointed-end on/off rates |
-| `n_motors`, `n_crosslinks` | `0, 0` | initial bound counts |
-| `new_motors_per_step` | `0` | binding attempts per `update()` call |
-| `new_crosslinks_per_step` | `0` | binding attempts per `update()` call |
-| `motor_v0` | `0.2` | unloaded walking velocity (μm/s) |
-| `motor_stall_force` | `8.0` | Fs (pN) |
-| `motor_force` | `4.0` | per-motor pulling force (pN) |
-| `crosslink_stiffness` | `8.0` | spring constant (pN/μm) |
-| `cylinder_stiffness` | `20.0` | filament stretch stiffness (pN/μm) |
-| `bending_stiffness` | `0.05` | filament bending modulus (pN μm²) |
-| `boundary_force_scale` | `1.5` | Brownian-ratchet characteristic force (pN) |
-| `drag_coefficient` | `40.0` | overdamped friction |
-| `bind_radius` | `0.2` | motor/crosslink capture radius (μm) |
-| `n_substeps` | `8` | integration sub-steps per `update()` call |
-| `seed_mode` | `'random'` | seed filaments at random or `'radial'` (outward inside membrane) |
-| `enable_membrane` | `False` | wrap network in a closed triangulated vesicle |
-| `membrane_radius` | `0.6` | initial vesicle radius (μm) |
-| `membrane_subdivisions` | `2` | icosphere subdivisions (1 → 42 verts, 2 → 162, 3 → 642) |
-| `membrane_edge_stiffness` | `30.0` | edge spring constant (in-plane / area resistance) |
-| `membrane_bending_stiffness` | `2.0` | Laplacian-smoothing bending modulus |
-| `membrane_pressure` | `0.0` | constant outward pressure (positive = inflating) |
-| `membrane_filament_coupling_radius` | `0.08` | filament tip ↔ vertex contact range (μm) |
-| `membrane_filament_coupling_strength` | `60.0` | contact force constant (pN/μm) |
-| `rng_seed` | `0` | reproducibility seed (`0` = nondeterministic) |
-
-### `make_network_document(interval, **process_config)`
-
-Returns a ready-to-run composite document dict wiring `MedyanProcess`
-to scalar stores and a `RAMEmitter` that records the metric time-series.
-
-## Architecture
-
-```
-                ┌─────────────────────────┐
-                │  MedyanProcess (PBG)    │
-                │  (bridge wrapper)       │
-                │                         │
-   no inputs    │  ┌───────────────────┐  │
-   ───────────► │  │   MedyanEngine    │  │
-                │  │ (Python physics)  │  │
-                │  │                   │  │
-                │  │  filaments[]      │  │  outputs ─►  stores
-                │  │  motors[]         │  │              ├─ n_filaments
-                │  │  crosslinks[]     │  │              ├─ total_length
-                │  │                   │  │              ├─ network_span
-                │  │  step(dt) =       │  │              ├─ total_energy
-                │  │   ├ polymerize    │  │              └─ ...
-                │  │   ├ walk_motors   │  │
-                │  │   ├ crosslinks    │  │
-                │  │   └ relax(forces) │  │
-                │  └───────────────────┘  │
-                └─────────────────────────┘
-```
-
-Each call to `MedyanProcess.update(state, interval)` runs `n_substeps`
-mechanochemical sub-steps of size `dt = interval / n_substeps`,
-returning the full set of network metrics as overwrite-typed outputs.
-
-### Mapping MEDYAN concepts to PBG
-
-| MEDYAN concept | PBG mapping |
-| --- | --- |
-| C++ `System` instance | engine state held inside `MedyanProcess` |
-| Reaction stepping (Gillespie) | `_polymerize`, `_walk_motors`, `_crosslink_dynamics` |
-| Mechanical equilibration | `_relax` (overdamped Euler with `n_substeps`) |
-| Per-filament cylinders | `Filament.beads` polyline + per-segment `rest_lengths` |
-| Crosslinker / motor binding | `_try_bind_*` in continuous space, capture radius `bind_radius` |
-| Brownian-ratchet feedback | `_project_boundary_forces` → `plus_force_proj`/`minus_force_proj` |
-| Output observables | scalar fields on `outputs()`, all wrapped in `overwrite[T]` |
-
-## Demo
-
-```bash
-source .venv/bin/activate
-python demo/demo_report.py
-open demo/report.html      # opens in default browser
-```
-
-The report runs four configurations (treadmilling polymerization,
-actomyosin contractility, **vesicle filopodial protrusion**, and
-dendritic crosslinked mesh) and produces a self-contained HTML page with:
-
-- interactive Three.js 3D viewer with time slider + play/pause; in the
-  vesicle config the membrane is rendered as a translucent
-  triangulated mesh that deforms in response to filament tip pushing
-- Plotly time-series charts (length, span, energy, binding counts; or
-  vesicle volume + membrane bending energy when a membrane is active)
-- color-coded bigraph-viz architecture PNG (left → right layout)
-- collapsible JSON tree of the composite document
-
-## Tests
-
-```bash
-source .venv/bin/activate
-pytest -v
-```
-
-The suite covers engine kinetics (treadmilling, depoly, contractility),
-PBG instantiation/update/output schema, and full Composite assembly with
-RAM-emitter round-trips. All tests run offline.
-
-## Driving the real C++ MEDYAN binary (`MedyanCxxProcess`)
-
-In addition to the pure-Python `MedyanProcess`, the package ships
-`pbg_medyan.cxx.MedyanCxxProcess` — a PBG Process that drives the
-**actual** [MEDYAN C++ binary](https://github.com/medyan-dev/medyan-public)
-via subprocess + checkpoint-restart, so each `update(state, interval)`
-runs MEDYAN for that interval and resumes from the last snapshot on
-the next call.
-
-### Setup
-
-The buildable C++ source lives at
-[`simularium/medyan`](https://github.com/simularium/medyan) (NOT
-`medyan-dev/medyan-public`, which only ships docs and examples).
-
-```bash
-# 1. Build MEDYAN yourself (it's not pip-installable):
-git clone https://github.com/simularium/medyan.git medyan-src
-cd medyan-src
-MEDYAN_NO_GUI=true ./conf.sh    # bootstraps vcpkg + cmake (~20-40 min first time)
-cd build && make -j8
-
-# 2. Tell the wrapper where it lives:
-export MEDYAN_BIN=$(pwd)/medyan
-```
-
-**macOS arm64 (Apple Silicon) note:** the upstream `simularium/medyan`
-is pinned to a 2022-era vcpkg + Boost 1.78 and uses `-march=native` plus
-x86-only intrinsics in places, so it doesn't build cleanly on Apple
-Silicon out of the box. The patches needed (Apple-clang flags, CMake-4
-policy minimum, an arm64 fallback in `dist_simd.h`, an `rdtsc()`
-fallback, excluding x86-only DistModule files) are documented in
-[`docs/macos_arm64_build.md`](docs/macos_arm64_build.md).
-
-The wrapper finds the binary via, in order:
-(1) `binary_path` config field, (2) `$MEDYAN_BIN`, (3) `medyan` on `PATH`.
-
-### Quick start
+## Quick start — real MEDYAN binary
 
 ```python
 from process_bigraph import allocate_core
@@ -251,77 +79,160 @@ from pbg_medyan.cxx import MedyanCxxProcess
 core = allocate_core()
 core.register_link('MedyanCxxProcess', MedyanCxxProcess)
 
-proc = MedyanCxxProcess(
-    config={
-        'n_filaments': 5,
-        'filament_length': 1,
-        'snapshot_interval': 0.5,
-        'chemistry_preset': 'actin_only',  # or 'actin_motor_linker'
-        'timeout': 120.0,
-    },
-    core=core)
+proc = MedyanCxxProcess(config={
+    'n_filaments': 5, 'filament_length': 1,
+    'snapshot_interval': 0.1,
+    'chemistry_preset': 'actin_only',   # or 'actin_motor_linker'
+}, core=core)
+proc.initial_state()
 
-# Each update runs MEDYAN for ``interval`` seconds.
-# First call: random seeding via NUMFILAMENTS / FILAMENTLENGTH.
-# Subsequent calls: writes a FILAMENTFILE from the last snapshot,
-# re-runs with PROJECTIONTYPE: PREDEFINED.
-print(proc.update({}, interval=1.0))
-print(proc.update({}, interval=1.0))
+# Single 1-second run, snapshotted every 0.1s. Harvest all 10 frames
+# for animation:
+proc.update({}, interval=1.0)
+for frame in proc.get_last_frames():
+    print(frame.time, len(frame.filaments))
+
+# Or stitch multiple intervals via FILAMENTFILE checkpoint-restart
+# (see "Restart fidelity" caveat below):
+proc.update({}, interval=1.0)
+proc.update({}, interval=1.0)
 ```
 
-Two demo scripts ship with the package:
+The wrapper finds the MEDYAN binary via, in order: (1) the `binary_path`
+config field, (2) the `MEDYAN_BIN` environment variable, (3) `medyan` on
+`PATH`. Build instructions and the macOS arm64 patch list are in
+[`docs/macos_arm64_build.md`](docs/macos_arm64_build.md).
 
-- [`demo/cxx_smoke.py`](demo/cxx_smoke.py) — minimal sanity check
-  (3 back-to-back intervals, prints metrics)
-- [`demo/cxx_demo_report.py`](demo/cxx_demo_report.py) — full
-  multi-config interactive HTML report (3 configs: sparse
-  treadmilling, dense polymerizing network, actomyosin contractility),
-  Three.js viewer with filaments / linkers / motors / branchers,
-  Plotly charts, bigraph-viz architecture diagram, JSON document
-  tree, sticky nav. Auto-opens in Safari on macOS. Output goes to
-  `demo/cxx_report.html`.
+## Demos
 
-### Restart fidelity (read this!)
+Two interactive HTML reports ship with the package — both are
+self-contained (CDN Three.js + Plotly), open in any browser, and embed
+the bigraph-viz architecture diagram + collapsible JSON document tree
+for each scenario.
 
-MEDYAN does **not** expose a documented restart keyword that preserves
-linker / motor / brancher binding state across separate invocations.
-The pattern this wrapper uses (FILAMENTFILE + `PROJECTIONTYPE: PREDEFINED`)
-is the one in MEDYAN's own MATLAB `restart/` scripts:
+### `demo/demo_report.py` — Python engine, 4 scenarios
 
-| state | preserved across `update()` calls? |
-| --- | --- |
-| filament bead positions | yes — exact |
-| filament types | yes |
-| diffusing-species copy numbers | no — re-seeded from chemistry each interval |
-| linker / motor / brancher bindings | no — re-sampled from chemistry each interval |
-| accumulated chemistry-step count | no |
+```bash
+python demo/demo_report.py    # writes demo/report.html
+```
 
-In practice, choose the `update()` interval to be **long enough** that
-chemistry reaches a quasi-steady state within each interval (so
-re-binding doesn't bias the dynamics). For most actin-network
-parameters that's 0.5-2 s. For full state preservation you'd need to
-extend MEDYAN itself to expose its internal restart protocol — out of
-scope here.
+1. **Treadmilling polymerization** — pure actin treadmill near critical concentration
+2. **Actomyosin contractility** — myosin minifilaments + α-actinin compact a crosslinked gel
+3. **Vesicle filopodial protrusion** — radial actin pushes a closed icosphere membrane outward
+4. **Dendritic crosslinked mesh** — high crosslinker density, no motors
 
-### Units
+### `demo/cxx_demo_report.py` — real MEDYAN binary, 3 scenarios
 
-`MedyanCxxProcess` uses MEDYAN-native units (**nm**, seconds, pN).
-The pure-Python `MedyanProcess` uses **µm**, seconds, pN. If you
-compose them in the same Composite, convert at the boundary.
+```bash
+MEDYAN_BIN=/path/to/medyan python demo/cxx_demo_report.py    # writes demo/cxx_report.html
+```
 
-### Custom chemistry
+1. **Motor-density parameter sweep** — 4 sub-runs at varying myosin
+   diffusing-species copy numbers, side-by-side 3D viewers + a
+   quantitative span-vs-density plot. Reproduces the central
+   [Popov, Komianos & Papoian 2016](https://doi.org/10.1371/journal.pcbi.1004877)
+   contractile-collapse trend.
+2. **Vesicle filopodia** — closed lipid vesicle (1000+ vertices,
+   2100+ triangles, Helfrich bending + constant tension + volume
+   conservation) wrapping an actin network. Membrane geometry comes
+   straight from `snapshots/<i>/membranes/<j>/{vertexDataFloat64,
+   triangleDataInt64}` in MEDYAN's HDF5 trajectory and is rendered as
+   a translucent triangulated mesh in Three.js.
+3. **PBG composability via actin pulse** — a square-wave G-actin
+   concentration is pushed into MEDYAN through the `actin_copy`
+   input port between intervals; the network goes through cycles of
+   net polymerization (high actin) and depolymerization (low actin).
+   This is the demo that **can't be done** with the bare MEDYAN
+   CLI — the wrapper turns it into one-line input wiring inside any
+   larger PBG Composite.
+
+`demo/cxx_smoke.py` is a minimal sanity check that runs three
+back-to-back intervals and prints metrics — useful when verifying
+a fresh MEDYAN build.
+
+## API reference
+
+### `MedyanProcess` — Python engine
+
+Output ports (all `overwrite[T]`):
+
+| Port | Type | Notes |
+| --- | --- | --- |
+| `n_filaments`, `n_motors`, `n_crosslinks` | integer | live counts |
+| `total_length`, `mean_filament_length` | float | μm |
+| `network_span`, `radius_of_gyration` | float | μm |
+| `bending_energy`, `stretch_energy`, `total_energy` | float | network mechanics |
+| `membrane_area`, `membrane_volume`, `membrane_mean_radius` | float | when `enable_membrane=True` |
+| `membrane_bending_energy` | float | edge-spring deformation energy |
+
+Selected config fields (`MedyanProcess.config_schema` for the full list):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `box_size` | `2.0` | cubic domain side length (μm) |
+| `n_filaments`, `initial_filament_length` | `10`, `0.4` | seeding |
+| `actin_concentration` | `10.0` | free G-actin (μM) |
+| `k_on_plus`, `k_off_plus` | `11.6, 1.4` | barbed-end on/off rates |
+| `k_on_minus`, `k_off_minus` | `1.3, 0.8` | pointed-end on/off rates |
+| `n_motors`, `n_crosslinks` | `0, 0` | initial bound counts |
+| `new_motors_per_step`, `new_crosslinks_per_step` | `0, 0` | binding attempts per `update()` |
+| `motor_v0`, `motor_stall_force`, `motor_force` | `0.2, 8.0, 4.0` | μm/s, pN, pN |
+| `crosslink_stiffness`, `cylinder_stiffness`, `bending_stiffness` | `8.0, 20.0, 0.05` | pN/μm, pN/μm, pN·μm² |
+| `boundary_force_scale`, `drag_coefficient` | `1.5, 40.0` | pN, friction |
+| `bind_radius` | `0.2` | motor/crosslink capture radius (μm) |
+| `n_substeps` | `8` | integration sub-steps per `update()` call |
+| `seed_mode` | `'random'` | `'random'` or `'radial'` (outward inside membrane) |
+| `enable_membrane` | `False` | wrap network in a closed triangulated vesicle |
+| `membrane_radius`, `membrane_subdivisions` | `0.6, 2` | vesicle size, mesh resolution |
+| `membrane_edge_stiffness`, `membrane_bending_stiffness` | `30.0, 2.0` | mesh elasticity |
+| `membrane_pressure` | `0.0` | constant outward pressure (positive = inflating) |
+| `membrane_filament_coupling_radius`, `..._strength` | `0.08, 60.0` | filament tip ↔ vertex contact FF |
+| `rng_seed` | `0` | reproducibility seed (`0` = nondeterministic) |
+
+`make_network_document(interval, **process_config)` returns a
+ready-to-run composite document wired to a `RAMEmitter`.
+
+### `MedyanCxxProcess` — real MEDYAN binary
+
+Input port:
+
+| Port | Type | Notes |
+| --- | --- | --- |
+| `actin_copy` | `maybe[integer]` | optional. When set on an `update(state, ...)` call, the wrapper rewrites the chemistry input's `SPECIESDIFFUSING: AD` line for that interval — a sibling PBG process can therefore drive G-actin availability into MEDYAN in real time |
+
+Output ports (all `overwrite[T]`):
+
+| Port | Type | Notes |
+| --- | --- | --- |
+| `n_filaments`, `n_linkers`, `n_motors`, `n_branchers` | integer | live counts in the last frame |
+| `total_filament_length`, `mean_filament_length` | float | nm |
+| `network_span` | float | bead bbox diagonal (nm) |
+| `n_membrane_vertices`, `n_membrane_triangles` | integer | when `enable_membrane=True` |
+| `membrane_span`, `membrane_mean_radius` | float | nm |
+| `cxx_runtime_seconds` | float | wall-clock of the most recent MEDYAN invocation |
+
+Helper accessors:
+- `proc.get_last_frame()` — the final `TrajFrame` from the last `update()`.
+- `proc.get_last_frames()` — **all** frames parsed during the last
+  `update()` (one per `SNAPSHOTTIME`). Use this for animation: a single
+  long MEDYAN run gives smooth intra-run evolution with no
+  FILAMENTFILE-restart re-gridding artifacts.
+
+Chemistry, in priority order:
 
 ```python
-proc = MedyanCxxProcess(config={
-    'chemistry_text': 'SPECIESDIFFUSING: AD 500 20e6 0 0 REG\n...',
-    # or:
-    'chemistry_path': '/abs/path/to/your/chemistryinput.txt',
-})
+# 1. Bundled preset (default 'actin_only', or 'actin_motor_linker')
+MedyanCxxProcess(config={'chemistry_preset': 'actin_motor_linker'})
+
+# 2. Inline text — useful for parameter sweeps via per-line edits
+MedyanCxxProcess(config={'chemistry_text': 'SPECIESDIFFUSING: AD 200 ...'})
+
+# 3. External file — for chemistries you maintain alongside the wrapper
+MedyanCxxProcess(config={'chemistry_path': '/abs/path/chemistryinput.txt'})
 ```
 
-For one-off MEDYAN keyword overrides (e.g. swap the chemistry
-algorithm to Gillespie, change a force-field constant) pass them via
-the `extra_keywords` constructor argument:
+For one-off MEDYAN keyword overrides (swap the chemistry algorithm,
+change a force-field constant, etc.) pass them via `extra_keywords`:
 
 ```python
 proc = MedyanCxxProcess(
@@ -331,29 +242,91 @@ proc = MedyanCxxProcess(
 )
 ```
 
-### Tests
+#### Membrane (deformable vesicle)
 
-The integration tests in `tests/test_cxx_integration.py` are
-auto-skipped when no MEDYAN binary is found, so the offline suite
-stays green. Run them with `MEDYAN_BIN=/path/to/medyan pytest -v`.
+Set `enable_membrane=True` and the wrapper emits an S-expression
+`(membrane prof1 ...)` + `(init-membrane prof1 ...)` block in the
+generated `systeminput.txt` and switches output parsing to `traj.h5`
+(the legacy text snapshot doesn't carry membrane geometry). Selected
+config:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `membrane_mesh_kind` | `'ELLIPSOID'` | mesh primitive recognized by `init-membrane` |
+| `membrane_center_x/y/z` | `1000.0` | mesh center (nm) |
+| `membrane_radius_x/y/z` | `500.0` | mesh radii (nm) |
+| `membrane_area_k`, `membrane_bending_k`, `membrane_tension`, `membrane_volume_k` | `400, 50, 0.02, 0.8` | Helfrich + tension + volume FFs |
+| `membrane_eq_curv`, `membrane_eq_area_factor` | `0.0, 0.98` | reference geometry |
+| `membrane_triangle_bead_k` / `_cutoff` / `_cutoff_mech` | `650, 150, 60` | filament–membrane repulsion FF |
+
+Tighten `gradient_tolerance` (default `0.1`) for small vesicles — the
+upstream big-vesicle examples' loose `5.0` value spirals on a
+500 nm-radius mesh.
+
+#### Restart fidelity caveat
+
+MEDYAN does **not** expose a documented restart keyword that preserves
+linker / motor / brancher binding state across separate invocations.
+The pattern this wrapper uses (FILAMENTFILE + `PROJECTIONTYPE: PREDEFINED`)
+is the one in MEDYAN's own MATLAB `restart/` scripts:
+
+| state | preserved across `update()` calls? |
+| --- | --- |
+| filament bead positions | yes — exact, after Euclidean re-gridding |
+| filament types | yes |
+| diffusing-species copy numbers | no — re-seeded from chemistry each interval |
+| linker / motor / brancher bindings | no — re-sampled from chemistry each interval |
+| accumulated chemistry-step count | no |
+
+For animation/visualization where this matters, do a **single long
+`update()`** with a tight `snapshot_interval` and harvest every frame
+via `get_last_frames()` — that's a single continuous MEDYAN run,
+no checkpoint-restart, no re-gridding. Multi-`update()` driving is
+still the right pattern when you need sibling PBG processes to
+modulate state between intervals (the composability demo does
+exactly that).
+
+#### Units
+
+`MedyanCxxProcess` uses MEDYAN-native units (**nm**, seconds, pN).
+The pure-Python `MedyanProcess` uses **µm**, seconds, pN. If you
+compose both in the same Composite, convert at the boundary.
+
+## Architecture
+
+```
+                 Pure-Python                          Real MEDYAN
+                ─────────────                        ───────────
+            ┌─────────────────────┐         ┌────────────────────────┐
+no inputs   │ MedyanProcess (PBG) │         │ MedyanCxxProcess (PBG) │  actin_copy
+   ────────►│  ┌───────────────┐  │         │  (subprocess driver)   │  ◄─────
+            │  │ MedyanEngine  │  │         │                        │
+            │  │   filaments   │  │         │   write systeminput.txt│
+            │  │   motors      │  │         │   write filaments.txt  │
+            │  │   crosslinks  │  │         │   spawn medyan         │
+            │  │   membrane    │  │         │   parse snapshot.traj  │
+            │  │               │  │         │   parse traj.h5 (HDF5) │
+            │  │  step(dt) =   │  │         │                        │
+            │  │   poly/walk/  │  │         │  outputs: same metrics │
+            │  │   xlink/relax │  │         │  + membrane geometry   │
+            │  └───────────────┘  │         │                        │
+            └──────────┬──────────┘         └─────────────┬──────────┘
+                       │                                  │
+                       └────► PBG outputs / stores ◄──────┘
+```
+
+Every output port is `overwrite[T]`, so each `update()` call replaces
+the scalar/list rather than accumulating deltas.
 
 ## Caveats / scope
 
-The pure-Python wrapper is **not** an exact reproduction of MEDYAN's C++ engine.
-It captures the qualitative physics (Brownian-ratchet polymerization,
-Hill-style motor walking, alpha-actinin tethering, overdamped relaxation)
-in a small Python implementation suitable for:
-
-- prototyping process-bigraph compositions involving cytoskeletal
-  components
-- demos and education
-- exploring qualitative regimes (treadmilling, contractility, crosslinked
-  meshes)
-
-For quantitative production simulations of large networks, ATP-state
-hydrolysis dynamics, branching nucleation, vesicle membranes, or
-boundaries beyond the simplified force-projection used here, run the
-upstream [MEDYAN C++ code](https://medyan.org/).
+`MedyanProcess` is **not** an exact reproduction of MEDYAN's C++
+engine. It captures the qualitative physics in a small Python
+implementation suitable for prototyping PBG compositions, education,
+and exploring qualitative regimes. For quantitative production work —
+ATP-state hydrolysis, Arp2/3 branching nucleation, large vesicles,
+or anything you'd cite in a paper — drive the upstream binary through
+`MedyanCxxProcess` instead.
 
 ## References
 
