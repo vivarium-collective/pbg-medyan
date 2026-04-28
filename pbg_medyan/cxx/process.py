@@ -293,7 +293,8 @@ class MedyanCxxProcess(Process):
         if is_restart:
             medyan_io.write_filament_file(
                 os.path.join(run_dir, 'filaments.txt'),
-                self._last_frame.filaments)
+                self._last_frame.filaments,
+                cylinder_size=float(self.config['cylinder_size']))
 
         kw = self._build_keywords(runtime=float(interval), restart=is_restart)
         sysinput_path = os.path.join(run_dir, 'systeminput.txt')

@@ -176,14 +176,111 @@ def parse_snapshot_traj(path: str) -> List[TrajFrame]:
 # ── writing ─────────────────────────────────────────────────────────
 
 
-def write_filament_file(path: str, filaments: List[FilamentSnapshot]) -> None:
+def _regrid_polyline(beads: np.ndarray, segment_length: float) -> np.ndarray:
+    """Resample a filament polyline onto evenly-spaced beads.
+
+    MEDYAN's ``PROJECTIONTYPE: PREDEFINED`` treats *every* cylinder as
+    exactly ``CYLINDERSIZE`` nm long regardless of the bead coordinates
+    you supply. Snapshot output, however, contains partial end cylinders
+    (created between bead-insertion events as monomers polymerize onto
+    the plus end). Naively round-tripping those produces short segments
+    that PREDEFINED still treats as full-size, which generates large
+    spurious forces and crashes MEDYAN after one or two intervals.
+
+    Algorithm: walk the polyline placing each new bead at exactly
+    ``segment_length`` **Euclidean** distance from the previous one.
+    Since MEDYAN's segments are straight-line cylinders, Euclidean
+    spacing is what matters (not arc length, which differs at every
+    kink). The polyline is first finely sampled by arc length so the
+    Euclidean walk lands accurately; the next-bead intersection with a
+    sphere of radius ``segment_length`` around the previous bead is
+    computed analytically on the line segment containing it.
+
+    Always returns at least 2 beads (the input must have ≥2 beads).
+    """
+    if beads.shape[0] < 2:
+        return beads.copy()
+
+    seg = np.diff(beads, axis=0)
+    seg_lens = np.linalg.norm(seg, axis=1)
+    total = float(seg_lens.sum())
+
+    if total < segment_length:
+        # Filament is shorter than one cylinder — stretch endpoints to
+        # exactly segment_length along the original axis so PREDEFINED's
+        # full-cylinder assumption sees a sensible initial state.
+        axis = beads[-1] - beads[0]
+        n = float(np.linalg.norm(axis))
+        axis = axis / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+        return np.array([beads[0], beads[0] + segment_length * axis])
+
+    # Fine-sample by arc length so Euclidean lookups land precisely.
+    n_fine = max(400, int(total / segment_length * 200))
+    cum = np.concatenate([[0.0], np.cumsum(seg_lens)])
+    s_fine = np.linspace(0.0, total, n_fine)
+    idx = np.searchsorted(cum, s_fine, side='right') - 1
+    idx = np.clip(idx, 0, beads.shape[0] - 2)
+    frac = (s_fine - cum[idx]) / np.maximum(seg_lens[idx], 1e-12)
+    fine = beads[idx] + frac[:, None] * seg[idx]
+
+    out = [fine[0].copy()]
+    i = 0
+    while i < n_fine - 1:
+        last = out[-1]
+        # Distances along the fine grid from the last placed bead
+        d = np.linalg.norm(fine[i:] - last, axis=1)
+        # Index of first sample >= segment_length
+        crossing = np.argmax(d >= segment_length)
+        if d[crossing] < segment_length:
+            # No further point reaches segment_length — done.
+            break
+        j = i + crossing
+        if j == 0:
+            j = 1
+        # Solve for t in [0,1] on segment fine[j-1] -> fine[j] such that
+        # ||fine[j-1] + t*(fine[j]-fine[j-1]) - last|| = segment_length
+        a = fine[j - 1] - last
+        b = fine[j] - fine[j - 1]
+        A = float(np.dot(b, b))
+        B = 2.0 * float(np.dot(a, b))
+        C = float(np.dot(a, a)) - segment_length * segment_length
+        if A < 1e-18:
+            out.append(fine[j].copy())
+        else:
+            disc = B * B - 4.0 * A * C
+            disc = max(disc, 0.0)
+            t = (-B + np.sqrt(disc)) / (2.0 * A)
+            t = float(np.clip(t, 0.0, 1.0))
+            out.append(fine[j - 1] + t * b)
+        i = j
+
+    if len(out) < 2:
+        # Pathological short polyline — fall back to first→last stretch.
+        axis = beads[-1] - beads[0]
+        n = float(np.linalg.norm(axis))
+        axis = axis / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+        return np.array([beads[0], beads[0] + segment_length * axis])
+
+    return np.array(out)
+
+
+def write_filament_file(
+    path: str,
+    filaments: List[FilamentSnapshot],
+    cylinder_size: float = 108.0,
+) -> None:
     """Write a ``FILAMENTFILE`` for ``PROJECTIONTYPE: PREDEFINED`` restart.
+
+    Each filament is re-gridded onto evenly-spaced beads at
+    ``cylinder_size``-nm intervals so PREDEFINED's full-cylinder
+    assumption matches the supplied geometry.
 
     Each line: ``FILAMENT <type> x0 y0 z0 x1 y1 z1 ...`` (nm).
     """
     with open(path, 'w') as f:
         for fil in filaments:
-            coords = ' '.join(f'{c:.6f}' for c in fil.beads.ravel())
+            beads = _regrid_polyline(fil.beads, cylinder_size)
+            coords = ' '.join(f'{c:.6f}' for c in beads.ravel())
             f.write(f'FILAMENT {fil.fil_type} {coords}\n')
 
 

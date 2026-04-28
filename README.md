@@ -216,14 +216,28 @@ the next call.
 
 ### Setup
 
+The buildable C++ source lives at
+[`simularium/medyan`](https://github.com/simularium/medyan) (NOT
+`medyan-dev/medyan-public`, which only ships docs and examples).
+
 ```bash
 # 1. Build MEDYAN yourself (it's not pip-installable):
-git clone https://github.com/medyan-dev/medyan-public
-cd medyan-public && # follow build instructions in their README
+git clone https://github.com/simularium/medyan.git medyan-src
+cd medyan-src
+MEDYAN_NO_GUI=true ./conf.sh    # bootstraps vcpkg + cmake (~20-40 min first time)
+cd build && make -j8
 
 # 2. Tell the wrapper where it lives:
-export MEDYAN_BIN=/path/to/built/medyan
+export MEDYAN_BIN=$(pwd)/medyan
 ```
+
+**macOS arm64 (Apple Silicon) note:** the upstream `simularium/medyan`
+is pinned to a 2022-era vcpkg + Boost 1.78 and uses `-march=native` plus
+x86-only intrinsics in places, so it doesn't build cleanly on Apple
+Silicon out of the box. The patches needed (Apple-clang flags, CMake-4
+policy minimum, an arm64 fallback in `dist_simd.h`, an `rdtsc()`
+fallback, excluding x86-only DistModule files) are documented in
+[`docs/macos_arm64_build.md`](docs/macos_arm64_build.md).
 
 The wrapper finds the binary via, in order:
 (1) `binary_path` config field, (2) `$MEDYAN_BIN`, (3) `medyan` on `PATH`.
