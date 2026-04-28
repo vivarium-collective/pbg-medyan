@@ -138,6 +138,8 @@ class MedyanCxxProcess(Process):
         # Output cadence (seconds)
         'snapshot_interval': {'_type': 'float', '_default': 0.5},
         'minimization_interval': {'_type': 'float', '_default': 0.05},
+        'gradient_tolerance': {'_type': 'float', '_default': 0.1},
+        'max_distance': {'_type': 'float', '_default': 1.0},
         # Geometry
         'nx': {'_type': 'integer', '_default': 2},
         'ny': {'_type': 'integer', '_default': 2},
@@ -155,9 +157,27 @@ class MedyanCxxProcess(Process):
         'chemistry_preset': {'_type': 'string', '_default': 'actin_only'},
         'chemistry_text': {'_type': 'string', '_default': ''},
         'chemistry_path': {'_type': 'string', '_default': ''},
-        # Free-form override of any MEDYAN keyword (string-formatted dict
-        # is awkward in the schema, so callers can pass a dict directly
-        # via Python; the schema only gates basics).
+        # Membrane (deformable vesicle). Off by default; set
+        # enable_membrane=True to add an icosphere-meshed membrane.
+        # When enabled, the wrapper switches to traj.h5 parsing for
+        # rich membrane geometry (snapshot.traj doesn't include it).
+        'enable_membrane': {'_type': 'boolean', '_default': False},
+        'membrane_mesh_kind': {'_type': 'string', '_default': 'ELLIPSOID'},
+        'membrane_center_x': {'_type': 'float', '_default': 1000.0},
+        'membrane_center_y': {'_type': 'float', '_default': 1000.0},
+        'membrane_center_z': {'_type': 'float', '_default': 1000.0},
+        'membrane_radius_x': {'_type': 'float', '_default': 500.0},
+        'membrane_radius_y': {'_type': 'float', '_default': 500.0},
+        'membrane_radius_z': {'_type': 'float', '_default': 500.0},
+        'membrane_area_k': {'_type': 'float', '_default': 400.0},
+        'membrane_bending_k': {'_type': 'float', '_default': 50.0},
+        'membrane_eq_curv': {'_type': 'float', '_default': 0.0},
+        'membrane_tension': {'_type': 'float', '_default': 0.02},
+        'membrane_volume_k': {'_type': 'float', '_default': 0.8},
+        'membrane_eq_area_factor': {'_type': 'float', '_default': 0.98},
+        'membrane_triangle_bead_k': {'_type': 'float', '_default': 650.0},
+        'membrane_triangle_bead_cutoff': {'_type': 'float', '_default': 150.0},
+        'membrane_triangle_bead_cutoff_mech': {'_type': 'float', '_default': 60.0},
     }
 
     def __init__(self, config=None, core=None, extra_keywords: Optional[Dict[str, Any]] = None):
@@ -184,6 +204,10 @@ class MedyanCxxProcess(Process):
             'total_filament_length': 'overwrite[float]',
             'mean_filament_length': 'overwrite[float]',
             'network_span': 'overwrite[float]',
+            'n_membrane_vertices': 'overwrite[integer]',
+            'n_membrane_triangles': 'overwrite[integer]',
+            'membrane_span': 'overwrite[float]',
+            'membrane_mean_radius': 'overwrite[float]',
             'cxx_runtime_seconds': 'overwrite[float]',
         }
 
@@ -198,6 +222,10 @@ class MedyanCxxProcess(Process):
             'total_filament_length': 0.0,
             'mean_filament_length': 0.0,
             'network_span': 0.0,
+            'n_membrane_vertices': 0,
+            'n_membrane_triangles': 0,
+            'membrane_span': 0.0,
+            'membrane_mean_radius': 0.0,
             'cxx_runtime_seconds': 0.0,
         }
 
@@ -260,6 +288,8 @@ class MedyanCxxProcess(Process):
         kw['NEIGHBORLISTTIME'] = cfg['minimization_interval']
         kw['SNAPSHOTTIME'] = min(cfg['snapshot_interval'], runtime)
         kw['RUNTIME'] = runtime
+        kw['GRADIENTTOLERANCE'] = cfg['gradient_tolerance']
+        kw['MAXDISTANCE'] = cfg['max_distance']
         kw['CHEMISTRYFILE'] = 'chemistryinput.txt'
         if restart:
             kw['PROJECTIONTYPE'] = 'PREDEFINED'
@@ -272,9 +302,46 @@ class MedyanCxxProcess(Process):
             kw['NUMFILAMENTS'] = cfg['n_filaments']
             kw['FILAMENTLENGTH'] = cfg['filament_length']
             kw['FILAMENTTYPE'] = cfg['filament_type']
+        # Membrane: append surface-curvature-policy and the membrane FF flags.
+        if cfg['enable_membrane']:
+            kw['surface-curvature-policy'] = 'squared'
+            kw['membrane-tension-ff-type'] = 'CONSTANT'
+            kw['membrane-bending-ff-type'] = 'HELFRICH'
+            kw['volume-conservation-ff-type'] = 'MEMBRANE'
+            kw['triangle-bead-volume-ff-type'] = 'REPULSION'
+            kw['triangle-bead-volume-k'] = cfg['membrane_triangle_bead_k']
+            kw['triangle-bead-volume-cutoff'] = cfg['membrane_triangle_bead_cutoff']
+            kw['triangle-bead-volume-cutoff-mech'] = (
+                cfg['membrane_triangle_bead_cutoff_mech'])
         # Caller overrides last
         kw.update(self._extra_keywords)
         return kw
+
+    def _build_membrane_block(self) -> str:
+        """Return the S-expression membrane + init-membrane blocks, or ''."""
+        cfg = self.config
+        if not cfg['enable_membrane']:
+            return ''
+        kind = cfg['membrane_mesh_kind']
+        cx, cy, cz = (cfg['membrane_center_x'], cfg['membrane_center_y'],
+                      cfg['membrane_center_z'])
+        rx, ry, rz = (cfg['membrane_radius_x'], cfg['membrane_radius_y'],
+                      cfg['membrane_radius_z'])
+        return (
+            f"(membrane prof1\n"
+            f"  (vertex-system     general)\n"
+            f"  (area-k            {cfg['membrane_area_k']})\n"
+            f"  (bending-k         {cfg['membrane_bending_k']})\n"
+            f"  (eq-curv           {cfg['membrane_eq_curv']})\n"
+            f"  (tension           {cfg['membrane_tension']})\n"
+            f"  (volume-k          {cfg['membrane_volume_k']})\n"
+            f")\n"
+            f"\n"
+            f"(init-membrane prof1\n"
+            f"  (mesh              {kind} {cx} {cy} {cz} {rx} {ry} {rz})\n"
+            f"  (eq-area-factor    {cfg['membrane_eq_area_factor']})\n"
+            f")\n"
+        )
 
     # ── core update path ──────────────────────────────────────────
 
@@ -297,8 +364,9 @@ class MedyanCxxProcess(Process):
                 cylinder_size=float(self.config['cylinder_size']))
 
         kw = self._build_keywords(runtime=float(interval), restart=is_restart)
+        extra = self._build_membrane_block()
         sysinput_path = os.path.join(run_dir, 'systeminput.txt')
-        medyan_io.write_system_input(sysinput_path, kw)
+        medyan_io.write_system_input(sysinput_path, kw, extra_text=extra or None)
 
         t0 = time.perf_counter()
         try:
@@ -318,12 +386,22 @@ class MedyanCxxProcess(Process):
                 f'--- stderr ---\n{proc.stderr}\n'
                 f'--- stdout (last 500 chars) ---\n{proc.stdout[-500:]}')
 
-        snap_path = self._find_snapshot_file(out_dir)
-        frames = medyan_io.parse_snapshot_traj(snap_path)
-        if not frames:
-            raise RuntimeError(
-                f'MEDYAN produced an empty snapshot.traj at {snap_path}. '
-                f'Check stdout for warnings:\n{proc.stdout[-500:]}')
+        # Prefer traj.h5 when membrane is enabled (snapshot.traj doesn't carry
+        # membrane geometry); fall back to text snapshot otherwise.
+        if self.config['enable_membrane']:
+            h5_path = self._find_h5_file(out_dir)
+            frames = medyan_io.parse_traj_h5(h5_path)
+            if not frames:
+                raise RuntimeError(
+                    f'MEDYAN produced an empty traj.h5 at {h5_path}. '
+                    f'Check stdout:\n{proc.stdout[-500:]}')
+        else:
+            snap_path = self._find_snapshot_file(out_dir)
+            frames = medyan_io.parse_snapshot_traj(snap_path)
+            if not frames:
+                raise RuntimeError(
+                    f'MEDYAN produced an empty snapshot.traj at {snap_path}. '
+                    f'Check stdout:\n{proc.stdout[-500:]}')
 
         last = frames[-1]
         self._last_frame = last
@@ -347,6 +425,19 @@ class MedyanCxxProcess(Process):
             f'MEDYAN may have failed silently — check stdout/stderr.')
 
     @staticmethod
+    def _find_h5_file(out_dir: str) -> str:
+        candidate = os.path.join(out_dir, 'traj.h5')
+        if os.path.exists(candidate):
+            return candidate
+        for root, _dirs, files in os.walk(out_dir):
+            if 'traj.h5' in files:
+                return os.path.join(root, 'traj.h5')
+        raise FileNotFoundError(
+            f'traj.h5 not found anywhere under {out_dir}. '
+            f'Membrane simulations require HDF5 output — '
+            f'verify your MEDYAN binary was built with highfive support.')
+
+    @staticmethod
     def _frame_metrics(frame: medyan_io.TrajFrame, runtime: float) -> Dict[str, Any]:
         if frame.filaments:
             lengths = [f.total_length_nm() for f in frame.filaments]
@@ -363,6 +454,17 @@ class MedyanCxxProcess(Process):
             total_len = 0.0
             mean_len = 0.0
             span = 0.0
+        # Membrane metrics: aggregate over all membranes in the frame.
+        n_mem_v = sum(m.n_vertices for m in frame.membranes)
+        n_mem_t = sum(m.n_triangles for m in frame.membranes)
+        if frame.membranes:
+            v = np.vstack([m.vertices for m in frame.membranes])
+            mem_span = float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+            center = v.mean(axis=0)
+            mem_mean_radius = float(np.linalg.norm(v - center, axis=1).mean())
+        else:
+            mem_span = 0.0
+            mem_mean_radius = 0.0
         return {
             'n_filaments': len(frame.filaments),
             'n_linkers': len(frame.linkers),
@@ -371,6 +473,10 @@ class MedyanCxxProcess(Process):
             'total_filament_length': total_len,
             'mean_filament_length': mean_len,
             'network_span': span,
+            'n_membrane_vertices': n_mem_v,
+            'n_membrane_triangles': n_mem_t,
+            'membrane_span': mem_span,
+            'membrane_mean_radius': mem_mean_radius,
             'cxx_runtime_seconds': float(runtime),
         }
 

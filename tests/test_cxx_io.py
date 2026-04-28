@@ -180,7 +180,8 @@ def test_system_input_skips_none_and_formats_bool():
     text = open(p).read()
     assert 'NX: 2' in text
     assert 'BOUNDARYSHAPE: CUBIC' in text
-    assert 'allow-same-filament-pair-binding: false' in text
+    # Hyphenated keys use space-separated format, not colon
+    assert 'allow-same-filament-pair-binding    false' in text
     assert 'NUMFILAMENTS' not in text
     assert 'FBENDINGK: 672' in text
 

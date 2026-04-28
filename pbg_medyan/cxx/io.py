@@ -87,6 +87,33 @@ class BrancherSnapshot:
 
 
 @dataclass
+class MembraneSnapshot:
+    """Triangulated membrane geometry at one snapshot.
+
+    Sourced from MEDYAN's HDF5 trajectory at
+    ``snapshots/<i>/membranes/<j>/{vertexDataFloat64, triangleDataInt64}``.
+    Only the position columns (first three of vertexDataFloat64) and the
+    triangle index list are exposed — the other columns (curvatures,
+    normals, lipid species copy numbers) are stored verbatim for callers
+    that need them but the wrapper's network-metric path doesn't use them.
+    """
+    mem_id: int
+    mem_type: int
+    vertices: np.ndarray            # (V, 3) — positions in nm
+    triangles: np.ndarray           # (T, 3) — vertex indices
+    vertex_data_float: np.ndarray   # (V, 8) — full per-vertex float columns
+    vertex_data_int: np.ndarray     # (V, 3) — full per-vertex int columns
+
+    @property
+    def n_vertices(self) -> int:
+        return int(self.vertices.shape[0])
+
+    @property
+    def n_triangles(self) -> int:
+        return int(self.triangles.shape[0])
+
+
+@dataclass
 class TrajFrame:
     chemstep: int
     time: float                    # seconds
@@ -98,6 +125,7 @@ class TrajFrame:
     linkers: List[LinkerSnapshot] = field(default_factory=list)
     motors: List[MotorSnapshot] = field(default_factory=list)
     branchers: List[BrancherSnapshot] = field(default_factory=list)
+    membranes: List[MembraneSnapshot] = field(default_factory=list)
 
 
 # ── parsing ─────────────────────────────────────────────────────────
@@ -264,6 +292,124 @@ def _regrid_polyline(beads: np.ndarray, segment_length: float) -> np.ndarray:
     return np.array(out)
 
 
+# ── HDF5 trajectory parsing (membrane-capable) ──────────────────────
+
+
+def parse_traj_h5(path: str) -> List[TrajFrame]:
+    """Parse MEDYAN's ``traj.h5`` file into TrajFrame list (with membranes).
+
+    The HDF5 trajectory carries richer information than ``snapshot.traj``
+    — most importantly, deformable membranes whose vertex/triangle
+    arrays don't appear in the legacy text format. Use this parser for
+    any vesicle-bearing simulation.
+
+    Layout (verified against MEDYAN v5.4.0 output)::
+
+        /snapshots/<i>/
+            time                      scalar float64
+            filaments/
+                count                 scalar int64
+                <j>                   (n_beads, 3) float64
+            linkers/
+                count                 scalar int64
+                <j>/coords            (2, 3) float64
+                <j>/type              "linker" | "motor" | "brancher"
+                <j>/id, /subtype      scalar int64
+            membranes/
+                count                 scalar int64
+                <j>/vertexDataFloat64 (V, 8) float64   (xyz + curv. + ...)
+                <j>/triangleDataInt64 (T, 3) int32
+                <j>/vertexDataInt64   (V, 3) int32
+                <j>/numVertices, /numTriangles, /numBorders, /type
+    """
+    import h5py  # imported lazily — h5py is an optional dep
+
+    frames: List[TrajFrame] = []
+    with h5py.File(path, 'r') as f:
+        if 'snapshots' not in f:
+            return frames
+        snap_grp = f['snapshots']
+        # Snapshot indices may be sparse strings ('0', '1', '10', ...) — sort numerically.
+        snap_ids = sorted(snap_grp.keys(), key=lambda s: int(s))
+        for sid in snap_ids:
+            grp = snap_grp[sid]
+            t = float(grp['time'][()]) if 'time' in grp else 0.0
+
+            # Filaments
+            fils: List[FilamentSnapshot] = []
+            if 'filaments' in grp:
+                fg = grp['filaments']
+                fil_ids = sorted([k for k in fg.keys() if k != 'count'],
+                                 key=lambda s: int(s))
+                for fid in fil_ids:
+                    beads = np.asarray(fg[fid][()], dtype=float)
+                    if beads.ndim == 2 and beads.shape[1] == 3:
+                        fils.append(FilamentSnapshot(
+                            fil_id=int(fid), fil_type=0,
+                            cyl_length=int(beads.shape[0] - 1),
+                            delta_l=0.0, delta_r=0.0, beads=beads))
+
+            # Linkers / motors / branchers — disambiguated via the 'type' field.
+            linkers: List[LinkerSnapshot] = []
+            motors: List[MotorSnapshot] = []
+            branchers: List[BrancherSnapshot] = []
+            if 'linkers' in grp:
+                lg = grp['linkers']
+                ids = sorted([k for k in lg.keys() if k != 'count'],
+                             key=lambda s: int(s))
+                for lid in ids:
+                    item = lg[lid]
+                    if 'coords' not in item:
+                        continue
+                    coords = np.asarray(item['coords'][()], dtype=float)
+                    start = coords[0] if coords.shape[0] > 0 else np.zeros(3)
+                    end = coords[1] if coords.shape[0] > 1 else start
+                    raw_type = item['type'][()] if 'type' in item else b'linker'
+                    type_str = (raw_type.decode() if isinstance(raw_type, bytes)
+                                else str(raw_type))
+                    obj_id = int(item['id'][()]) if 'id' in item else int(lid)
+                    obj_subtype = int(item['subtype'][()]) if 'subtype' in item else 0
+                    if 'motor' in type_str.lower():
+                        motors.append(MotorSnapshot(
+                            obj_id=obj_id, obj_type=obj_subtype,
+                            start=start, end=end))
+                    elif 'brancher' in type_str.lower():
+                        branchers.append(BrancherSnapshot(
+                            obj_id=obj_id, obj_type=obj_subtype,
+                            start=start, end=end))
+                    else:
+                        linkers.append(LinkerSnapshot(
+                            obj_id=obj_id, obj_type=obj_subtype,
+                            start=start, end=end))
+
+            # Membranes
+            membranes: List[MembraneSnapshot] = []
+            if 'membranes' in grp:
+                mg = grp['membranes']
+                mem_ids = sorted([k for k in mg.keys() if k != 'count'],
+                                 key=lambda s: int(s))
+                for mid in mem_ids:
+                    item = mg[mid]
+                    vdf = np.asarray(item['vertexDataFloat64'][()], dtype=float)
+                    vdi = np.asarray(item['vertexDataInt64'][()], dtype=int)
+                    tri = np.asarray(item['triangleDataInt64'][()], dtype=int)
+                    mem_type = int(item['type'][()]) if 'type' in item else 0
+                    membranes.append(MembraneSnapshot(
+                        mem_id=int(mid), mem_type=mem_type,
+                        vertices=vdf[:, :3].copy(),
+                        triangles=tri,
+                        vertex_data_float=vdf,
+                        vertex_data_int=vdi))
+
+            frames.append(TrajFrame(
+                chemstep=0, time=t,
+                n_filaments=len(fils), n_linkers=len(linkers),
+                n_motors=len(motors), n_branchers=len(branchers),
+                filaments=fils, linkers=linkers, motors=motors,
+                branchers=branchers, membranes=membranes))
+    return frames
+
+
 def write_filament_file(
     path: str,
     filaments: List[FilamentSnapshot],
@@ -292,7 +438,11 @@ def _format_value(v: Any) -> str:
     return str(v)
 
 
-def write_system_input(path: str, params: Dict[str, Any]) -> None:
+def write_system_input(
+    path: str,
+    params: Dict[str, Any],
+    extra_text: Optional[str] = None,
+) -> None:
     """Write a ``systeminput.txt`` from a flat dict of MEDYAN keywords.
 
     Keys are written verbatim (caller is responsible for using the
@@ -300,12 +450,31 @@ def write_system_input(path: str, params: Dict[str, Any]) -> None:
     values are skipped so the dict can carry "unset" entries.
     Booleans render as ``true``/``false`` (for keys like
     ``allow-same-filament-pair-binding``); other scalars use ``str()``.
+
+    ``extra_text`` is appended verbatim after the key/value pairs and is
+    used for things like S-expression membrane blocks that don't fit
+    the ``KEY: value`` format.
     """
     with open(path, 'w') as f:
         for key, value in params.items():
             if value is None:
                 continue
-            f.write(f'{key}: {_format_value(value)}\n')
+            # MEDYAN's parser handles two styles:
+            #   - Uppercase KEY: VALUE  (legacy, used for NX, FSTRETCHINGK, …)
+            #   - lowercase-hyphenated  VALUE  (newer, used for membrane FFs and
+            #     things like surface-curvature-policy, allow-same-filament-pair-binding)
+            # Hyphenated keys with a colon are silently ignored — picking the
+            # wrong style for the wrong key family breaks the simulation
+            # without an error message.
+            if '-' in key:
+                f.write(f'{key}    {_format_value(value)}\n')
+            else:
+                f.write(f'{key}: {_format_value(value)}\n')
+        if extra_text:
+            f.write('\n')
+            f.write(extra_text)
+            if not extra_text.endswith('\n'):
+                f.write('\n')
 
 
 def write_chemistry_input(path: str, content: str) -> None:
