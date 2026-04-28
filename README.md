@@ -2,6 +2,15 @@
 
 A [process-bigraph](https://github.com/vivarium-collective/process-bigraph)
 wrapper for the [MEDYAN](https://medyan.org/) cytoskeletal-network simulator.
+
+**[View Interactive Demo Report](https://vivarium-collective.github.io/pbg-medyan/)** —
+real-MEDYAN motor-density sweep, deformable-vesicle filopodia (membrane mesh
+pulled live from MEDYAN's `traj.h5`), and a PBG-composability demo where a
+sibling process drives MEDYAN's G-actin concentration through a square-wave
+pulse. Three.js 3D viewers, Plotly metrics charts, and bigraph-viz
+architecture diagrams. The pure-Python engine's report is at
+[python_demo.html](https://vivarium-collective.github.io/pbg-medyan/python_demo.html).
+
 Two complementary Processes ship in this package:
 
 | | `MedyanProcess` | `MedyanCxxProcess` |
