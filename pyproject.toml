@@ -12,12 +12,17 @@ dependencies = [
     "process-bigraph>=0.0.10",
     "bigraph-schema",
     "bigraph-viz",
+    "pbg-superpowers",
+    "pyyaml",
     "numpy",
     "matplotlib",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "plotly"]
+
+[tool.uv.sources]
+pbg-superpowers = { git = "https://github.com/vivarium-collective/pbg-superpowers.git", branch = "main" }
 
 [tool.setuptools.packages.find]
 include = ["pbg_medyan*"]
