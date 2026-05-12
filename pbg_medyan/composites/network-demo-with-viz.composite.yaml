@@ -1,5 +1,6 @@
 name: network-demo-with-viz
 description: "MEDYAN-style network demo with a wired Visualization Step. Each update produces a Plotly HTML figure of the running scalar network metrics, written to the 'viz_html' store."
+tags: [cytoskeleton, polymers, mechanics, demo, visualization]
 
 requires:
   processes: [MedyanProcess, NetworkMetricsPlots, RAMEmitter]

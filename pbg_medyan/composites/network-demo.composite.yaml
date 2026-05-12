@@ -1,5 +1,6 @@
 name: network-demo
 description: "Minimal MEDYAN-style actomyosin network: a handful of seeded actin filaments treadmilling under a Brownian-ratchet boundary force. Emits the core scalar network metrics each step."
+tags: [cytoskeleton, polymers, mechanics, demo]
 
 requires:
   processes: [MedyanProcess, RAMEmitter]
